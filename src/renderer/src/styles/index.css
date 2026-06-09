@@ -1,0 +1,167 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── theme tokens ─────────────────────────────────────────────────────── */
+
+:root,
+:root[data-theme='dark'] {
+  --bg-base: 12 12 14;
+  --bg-panel: 16 16 19;
+  --bg-subtle: 21 21 26;
+  --bg-raised: 26 26 32;
+  --bg-hover: 31 31 38;
+
+  --border-subtle: 31 31 38;
+  --border: 38 38 46;
+  --border-strong: 51 51 61;
+
+  --fg-base: 230 230 234;
+  --fg-muted: 154 154 163;
+  --fg-subtle: 95 95 106;
+  --fg-dim: 58 58 68;
+
+  --accent: 157 124 255;
+  --accent-subtle: 111 87 181;
+
+  --scope-line: 58 166 255;
+  --scope-block: 157 124 255;
+  --scope-file: 106 210 154;
+  --scope-project: 255 180 84;
+  --scope-custom: 255 106 141;
+
+  --scrollbar-thumb: 31 31 38;
+  --scrollbar-thumb-hover: 42 42 51;
+
+  --scope-deco-line-bg: 58 166 255;
+  --scope-deco-block-bg: 157 124 255;
+  --scope-deco-file-bg: 106 210 154;
+  --scope-deco-custom-bg: 255 106 141;
+  --scope-deco-line-alpha: 0.06;
+  --scope-deco-block-alpha: 0.08;
+  --scope-deco-file-alpha: 0.04;
+  --scope-deco-custom-alpha: 0.06;
+  --scope-deco-bar-alpha: 0.55;
+}
+
+:root[data-theme='light'] {
+  --bg-base: 252 252 253;
+  --bg-panel: 246 246 249;
+  --bg-subtle: 240 240 244;
+  --bg-raised: 234 234 240;
+  --bg-hover: 228 228 235;
+
+  --border-subtle: 226 226 232;
+  --border: 213 213 221;
+  --border-strong: 192 192 202;
+
+  --fg-base: 24 24 30;
+  --fg-muted: 88 88 100;
+  --fg-subtle: 134 134 148;
+  --fg-dim: 180 180 192;
+
+  --accent: 96 71 199;
+  --accent-subtle: 145 124 220;
+
+  --scope-line: 33 130 220;
+  --scope-block: 96 71 199;
+  --scope-file: 64 152 102;
+  --scope-project: 198 122 24;
+  --scope-custom: 200 60 100;
+
+  --scrollbar-thumb: 213 213 221;
+  --scrollbar-thumb-hover: 192 192 202;
+
+  --scope-deco-line-bg: 33 130 220;
+  --scope-deco-block-bg: 96 71 199;
+  --scope-deco-file-bg: 64 152 102;
+  --scope-deco-custom-bg: 200 60 100;
+  --scope-deco-line-alpha: 0.08;
+  --scope-deco-block-alpha: 0.1;
+  --scope-deco-file-alpha: 0.06;
+  --scope-deco-custom-alpha: 0.08;
+  --scope-deco-bar-alpha: 0.55;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    width: 100%;
+  }
+
+  body {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(var(--scrollbar-thumb));
+    border-radius: 6px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgb(var(--scrollbar-thumb-hover));
+  }
+
+  input,
+  textarea {
+    background: transparent;
+    color: inherit;
+    outline: none;
+  }
+
+  .syde-selectable {
+    user-select: text;
+    -webkit-user-select: text;
+  }
+}
+
+@layer components {
+  .syde-pill {
+    @apply inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition-colors;
+  }
+  .syde-pill-muted {
+    @apply syde-pill bg-bg-subtle text-fg-muted hover:bg-bg-hover hover:text-fg-base;
+  }
+  .syde-pill-active {
+    @apply syde-pill bg-bg-raised text-fg-base ring-1 ring-border;
+  }
+  .syde-divider {
+    @apply h-4 w-px bg-border;
+  }
+}
+
+/* Monaco scope decoration — colors driven by CSS variables so they swap on theme. */
+.syde-scope-decoration-line {
+  background: rgb(var(--scope-deco-line-bg) / var(--scope-deco-line-alpha));
+  box-shadow: inset 2px 0 0 0 rgb(var(--scope-deco-line-bg) / var(--scope-deco-bar-alpha));
+}
+.syde-scope-decoration-block {
+  background: rgb(var(--scope-deco-block-bg) / var(--scope-deco-block-alpha));
+  box-shadow: inset 2px 0 0 0 rgb(var(--scope-deco-block-bg) / var(--scope-deco-bar-alpha));
+}
+.syde-scope-decoration-file {
+  background: rgb(var(--scope-deco-file-bg) / var(--scope-deco-file-alpha));
+  box-shadow: inset 2px 0 0 0 rgb(var(--scope-deco-file-bg) / var(--scope-deco-bar-alpha));
+}
+.syde-scope-decoration-custom {
+  background: rgb(var(--scope-deco-custom-bg) / var(--scope-deco-custom-alpha));
+  box-shadow: inset 2px 0 0 0 rgb(var(--scope-deco-custom-bg) / var(--scope-deco-bar-alpha));
+}
+.syde-scope-glyph {
+  background: rgb(var(--scope-deco-block-bg) / var(--scope-deco-bar-alpha));
+  width: 3px !important;
+  margin-left: 4px;
+}
+
+.xterm-viewport::-webkit-scrollbar {
+  width: 6px;
+}
