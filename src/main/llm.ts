@@ -1,26 +1,86 @@
 import Anthropic from '@anthropic-ai/sdk'
+import OpenAI from 'openai'
 import { getSecret } from './db'
-import type { LLMRequest, Mode, Scope } from '@shared/types'
+import type {
+  LLMProvider,
+  LLMRequest,
+  Mode,
+  Scope,
+  TokenUsage
+} from '@shared/types'
 
-export const API_KEY_PREF = 'anthropic_api_key'
-export const MODEL_PREF = 'syde_model'
+// ── Preference keys (string-keyed, persisted in syde.db) ──────────────────
+//
+// Provider-scoped:
+export const ANTHROPIC_API_KEY_PREF = 'anthropic_api_key'
+export const ANTHROPIC_MODEL_PREF = 'anthropic_model'
+export const OPENAI_API_KEY_PREF = 'openai_api_key'
+export const OPENAI_MODEL_PREF = 'openai_model'
+//
+// Which provider is currently active (used by `run` for both ask and edit):
+export const ACTIVE_PROVIDER_PREF = 'active_provider'
+//
+// Backwards-compat aliases. Earlier builds stored the Anthropic key under
+// `anthropic_api_key` (already provider-scoped — unchanged) and the model
+// under the generic key `syde_model`. We migrate seamlessly by reading the
+// old key as a fallback, so nobody loses their settings on upgrade.
+export const LEGACY_MODEL_PREF = 'syde_model'
 
-const DEFAULT_MODEL_FALLBACK = 'claude-sonnet-4-6'
+// Preserved for callers that imported these names from older builds. They
+// now point at the Anthropic-scoped versions.
+export const API_KEY_PREF = ANTHROPIC_API_KEY_PREF
+export const MODEL_PREF = ANTHROPIC_MODEL_PREF
+
+// ── Defaults ──────────────────────────────────────────────────────────────
+const ANTHROPIC_DEFAULT_MODEL = 'claude-sonnet-4-6'
+const OPENAI_DEFAULT_MODEL = 'gpt-4o'
 const MAX_TOKENS = Number(process.env.SYDE_MAX_TOKENS ?? '4096')
 
-function getModel(): string {
-  return process.env.SYDE_MODEL ?? getSecret(MODEL_PREF) ?? DEFAULT_MODEL_FALLBACK
+// ── Provider helpers ──────────────────────────────────────────────────────
+
+export function getActiveProvider(): LLMProvider {
+  const stored = getSecret(ACTIVE_PROVIDER_PREF)
+  if (stored === 'openai') return 'openai'
+  return 'anthropic'
 }
 
-export function getApiKeySource(): 'env' | 'stored' | 'none' {
-  if (process.env.ANTHROPIC_API_KEY) return 'env'
-  if (getSecret(API_KEY_PREF)) return 'stored'
+export function getApiKeySource(
+  provider: LLMProvider = getActiveProvider()
+): 'env' | 'stored' | 'none' {
+  if (provider === 'anthropic') {
+    if (process.env.ANTHROPIC_API_KEY) return 'env'
+    if (getSecret(ANTHROPIC_API_KEY_PREF)) return 'stored'
+    return 'none'
+  }
+  if (process.env.OPENAI_API_KEY) return 'env'
+  if (getSecret(OPENAI_API_KEY_PREF)) return 'stored'
   return 'none'
 }
 
-function resolveApiKey(): string | null {
-  return process.env.ANTHROPIC_API_KEY ?? getSecret(API_KEY_PREF)
+function resolveApiKey(provider: LLMProvider): string | null {
+  if (provider === 'anthropic') {
+    return process.env.ANTHROPIC_API_KEY ?? getSecret(ANTHROPIC_API_KEY_PREF)
+  }
+  return process.env.OPENAI_API_KEY ?? getSecret(OPENAI_API_KEY_PREF)
 }
+
+export function getModelFor(provider: LLMProvider): string {
+  if (provider === 'anthropic') {
+    return (
+      process.env.SYDE_MODEL ??
+      getSecret(ANTHROPIC_MODEL_PREF) ??
+      getSecret(LEGACY_MODEL_PREF) ??
+      ANTHROPIC_DEFAULT_MODEL
+    )
+  }
+  return getSecret(OPENAI_MODEL_PREF) ?? OPENAI_DEFAULT_MODEL
+}
+
+export function getDefaultModelFor(provider: LLMProvider): string {
+  return provider === 'anthropic' ? ANTHROPIC_DEFAULT_MODEL : OPENAI_DEFAULT_MODEL
+}
+
+// ── Prompt builders (provider-agnostic) ───────────────────────────────────
 
 function buildSystemPrompt(mode: Mode, scope: Scope, contextCount: number): string {
   const lines: string[] = []
@@ -29,7 +89,6 @@ function buildSystemPrompt(mode: Mode, scope: Scope, contextCount: number): stri
     'You are SyDE, an in-editor coding assistant. The developer is intentionally constraining what you may see and what you may change. Respect those constraints absolutely.'
   )
 
-  // Scope rules
   switch (scope.level) {
     case 'line':
       lines.push(
@@ -48,7 +107,7 @@ function buildSystemPrompt(mode: Mode, scope: Scope, contextCount: number): stri
       break
     case 'project':
       lines.push(
-        'SCOPE: PROJECT. You may reason across the provided context files. In edit mode, the developer expects a replacement for the active file unless they ask otherwise. In agent mode, you may propose multiple sequential edits, but each must target a specific file already in scope.'
+        'SCOPE: PROJECT. You may reason across the provided context files. In edit mode, the developer expects a replacement for the active file unless they ask otherwise.'
       )
       break
     case 'custom':
@@ -58,7 +117,6 @@ function buildSystemPrompt(mode: Mode, scope: Scope, contextCount: number): stri
       break
   }
 
-  // Mode rules
   switch (mode) {
     case 'ask':
       lines.push(
@@ -68,11 +126,6 @@ function buildSystemPrompt(mode: Mode, scope: Scope, contextCount: number): stri
     case 'edit':
       lines.push(
         'MODE: EDIT. Your entire response will be inserted directly into the editor at the scoped range. Output ONLY the replacement code. No explanations. No prose. No code fences. No leading or trailing commentary. If you cannot satisfy the request within the scope, output the original code unchanged.'
-      )
-      break
-    case 'agent':
-      lines.push(
-        'MODE: AGENT. You may produce a sequence of edits across the provided context. For now, output the replacement code for the active scope only — multi-step orchestration is handled by the editor. No prose, no code fences.'
       )
       break
   }
@@ -120,32 +173,51 @@ function buildUserMessage(req: LLMRequest): string {
 export interface StreamHandlers {
   onStart: () => void
   onDelta: (text: string) => void
-  onEnd: (fullText: string) => void
+  onEnd: (fullText: string, usage?: TokenUsage) => void
   onError: (err: string) => void
 }
 
+// ── Session ───────────────────────────────────────────────────────────────
+
 export class LLMSession {
-  private client: Anthropic | null = null
-  private cachedKey: string | null = null
+  private anthropicClient: Anthropic | null = null
+  private anthropicKey: string | null = null
+  private openaiClient: OpenAI | null = null
+  private openaiKey: string | null = null
   private active: AbortController | null = null
 
-  private getClient(): Anthropic {
-    const key = resolveApiKey()
+  private getAnthropic(): Anthropic {
+    const key = resolveApiKey('anthropic')
     if (!key) {
       throw new Error(
         'No Anthropic API key configured. Open Settings (gear icon, top right) to add one.'
       )
     }
-    if (this.client && this.cachedKey === key) return this.client
-    this.client = new Anthropic({ apiKey: key })
-    this.cachedKey = key
-    return this.client
+    if (this.anthropicClient && this.anthropicKey === key) return this.anthropicClient
+    this.anthropicClient = new Anthropic({ apiKey: key })
+    this.anthropicKey = key
+    return this.anthropicClient
   }
 
-  /** Drop the cached client so the next request rebuilds it from the latest key. */
+  private getOpenAI(): OpenAI {
+    const key = resolveApiKey('openai')
+    if (!key) {
+      throw new Error(
+        'No OpenAI API key configured. Open Settings (gear icon, top right) to add one.'
+      )
+    }
+    if (this.openaiClient && this.openaiKey === key) return this.openaiClient
+    this.openaiClient = new OpenAI({ apiKey: key })
+    this.openaiKey = key
+    return this.openaiClient
+  }
+
+  /** Drop the cached clients so the next request rebuilds them from the latest keys. */
   invalidateClient(): void {
-    this.client = null
-    this.cachedKey = null
+    this.anthropicClient = null
+    this.anthropicKey = null
+    this.openaiClient = null
+    this.openaiKey = null
   }
 
   cancel(): void {
@@ -155,17 +227,29 @@ export class LLMSession {
     }
   }
 
-  /** Validate a candidate key against the API without permanently storing it. */
-  async testKey(apiKey: string): Promise<{ ok: boolean; error?: string; model?: string }> {
+  /** Validate a candidate key for the given provider. */
+  async testKey(
+    provider: LLMProvider,
+    apiKey: string
+  ): Promise<{ ok: boolean; error?: string; model?: string }> {
     if (!apiKey) return { ok: false, error: 'empty key' }
-    const model = getModel()
+    const model = getModelFor(provider)
     try {
-      const c = new Anthropic({ apiKey })
-      await c.messages.create({
-        model,
-        max_tokens: 4,
-        messages: [{ role: 'user', content: 'ping' }]
-      })
+      if (provider === 'anthropic') {
+        const c = new Anthropic({ apiKey })
+        await c.messages.create({
+          model,
+          max_tokens: 4,
+          messages: [{ role: 'user', content: 'ping' }]
+        })
+      } else {
+        const c = new OpenAI({ apiKey })
+        await c.chat.completions.create({
+          model,
+          max_tokens: 4,
+          messages: [{ role: 'user', content: 'ping' }]
+        })
+      }
       return { ok: true, model }
     } catch (e) {
       const err = e as { message?: string; status?: number }
@@ -177,12 +261,20 @@ export class LLMSession {
   }
 
   async run(req: LLMRequest, handlers: StreamHandlers): Promise<void> {
+    const provider = getActiveProvider()
+    if (provider === 'openai') {
+      return this.runOpenAI(req, handlers)
+    }
+    return this.runAnthropic(req, handlers)
+  }
+
+  private async runAnthropic(req: LLMRequest, handlers: StreamHandlers): Promise<void> {
     let client: Anthropic
     try {
-      client = this.getClient()
+      client = this.getAnthropic()
     } catch (e) {
       const msg = (e as Error).message
-      console.error('[syde:llm] client init error:', msg)
+      console.error('[syde:llm] anthropic init error:', msg)
       handlers.onError(msg)
       return
     }
@@ -199,9 +291,9 @@ export class LLMSession {
     this.active = new AbortController()
     handlers.onStart()
 
-    const model = getModel()
+    const model = getModelFor('anthropic')
     console.log(
-      `[syde:llm] start request=${req.requestId} model=${model} mode=${req.mode} scope=${req.scope.level} ctx=${req.context.length} scopeChars=${req.scope.content.length} histChars=${req.chatHistory.reduce((n, m) => n + m.content.length, 0)}`
+      `[syde:llm] start provider=anthropic request=${req.requestId} model=${model} mode=${req.mode} scope=${req.scope.level} ctx=${req.context.length} scopeChars=${req.scope.content.length} histChars=${req.chatHistory.reduce((n, m) => n + m.content.length, 0)}`
     )
 
     let full = ''
@@ -223,7 +315,7 @@ export class LLMSession {
 
       stream.on('error', (e: unknown) => {
         const err = e as Error
-        console.error('[syde:llm] stream error:', err.message ?? err)
+        console.error('[syde:llm] anthropic stream error:', err.message ?? err)
       })
 
       const final = await stream.finalMessage()
@@ -232,20 +324,116 @@ export class LLMSession {
           if (block.type === 'text') full += block.text
         }
       }
-      const usage = final.usage
-        ? `in=${final.usage.input_tokens} out=${final.usage.output_tokens}`
-        : ''
+      const usage: TokenUsage | undefined = final.usage
+        ? { input: final.usage.input_tokens, output: final.usage.output_tokens }
+        : undefined
       console.log(
-        `[syde:llm] end request=${req.requestId} chars=${full.length} ${usage} stop=${final.stop_reason ?? '?'}`
+        `[syde:llm] end provider=anthropic request=${req.requestId} chars=${full.length} ${
+          usage ? `in=${usage.input} out=${usage.output}` : ''
+        } stop=${final.stop_reason ?? '?'}`
       )
-      handlers.onEnd(full)
+      handlers.onEnd(full, usage)
     } catch (e) {
       const err = e as Error
       if (err.name === 'AbortError') {
-        console.log(`[syde:llm] aborted request=${req.requestId} chars=${full.length}`)
+        console.log(`[syde:llm] anthropic aborted request=${req.requestId} chars=${full.length}`)
         handlers.onEnd(full)
       } else {
-        console.error(`[syde:llm] error request=${req.requestId}:`, err.message ?? err)
+        console.error(`[syde:llm] anthropic error request=${req.requestId}:`, err.message ?? err)
+        handlers.onError(err.message ?? String(err))
+      }
+    } finally {
+      this.active = null
+    }
+  }
+
+  private async runOpenAI(req: LLMRequest, handlers: StreamHandlers): Promise<void> {
+    let client: OpenAI
+    try {
+      client = this.getOpenAI()
+    } catch (e) {
+      const msg = (e as Error).message
+      console.error('[syde:llm] openai init error:', msg)
+      handlers.onError(msg)
+      return
+    }
+
+    const system = buildSystemPrompt(req.mode, req.scope, req.context.length)
+    const userContent = buildUserMessage(req)
+
+    type ChatRole = 'system' | 'user' | 'assistant'
+    const messages: { role: ChatRole; content: string }[] = [
+      { role: 'system', content: system }
+    ]
+    for (const m of req.chatHistory) {
+      messages.push({ role: m.role, content: m.content })
+    }
+    messages.push({ role: 'user', content: userContent })
+
+    this.active = new AbortController()
+    handlers.onStart()
+
+    const model = getModelFor('openai')
+    console.log(
+      `[syde:llm] start provider=openai request=${req.requestId} model=${model} mode=${req.mode} scope=${req.scope.level} ctx=${req.context.length} scopeChars=${req.scope.content.length} histChars=${req.chatHistory.reduce((n, m) => n + m.content.length, 0)}`
+    )
+
+    let full = ''
+    let usage: TokenUsage | undefined
+    let stop: string | null | undefined
+
+    try {
+      // Some newer OpenAI models (o1/o3 family) don't accept `max_tokens` and
+      // require `max_completion_tokens` instead. Most of the gpt-4* family
+      // accept either, so prefer the new field across the board.
+      const params: Parameters<typeof client.chat.completions.create>[0] = {
+        model,
+        messages,
+        stream: true,
+        stream_options: { include_usage: true },
+        max_completion_tokens: MAX_TOKENS
+      }
+
+      const stream = await client.chat.completions.create(params, {
+        signal: this.active.signal
+      })
+
+      // The streaming overload returns an AsyncIterable<ChatCompletionChunk>.
+      for await (const chunk of stream as unknown as AsyncIterable<{
+        choices?: Array<{
+          delta?: { content?: string | null }
+          finish_reason?: string | null
+        }>
+        usage?: { prompt_tokens?: number; completion_tokens?: number } | null
+      }>) {
+        const choice = chunk.choices?.[0]
+        const delta = choice?.delta?.content
+        if (typeof delta === 'string' && delta.length > 0) {
+          full += delta
+          handlers.onDelta(delta)
+        }
+        if (choice?.finish_reason) stop = choice.finish_reason
+        if (chunk.usage) {
+          usage = {
+            input: chunk.usage.prompt_tokens ?? 0,
+            output: chunk.usage.completion_tokens ?? 0
+          }
+        }
+      }
+
+      console.log(
+        `[syde:llm] end provider=openai request=${req.requestId} chars=${full.length} ${
+          usage ? `in=${usage.input} out=${usage.output}` : ''
+        } stop=${stop ?? '?'}`
+      )
+      handlers.onEnd(full, usage)
+    } catch (e) {
+      const err = e as Error
+      if (err.name === 'AbortError' || /aborted/i.test(err.message ?? '')) {
+        console.log(`[syde:llm] openai aborted request=${req.requestId} chars=${full.length}`)
+        handlers.onEnd(full, usage)
+      } else {
+        console.error(`[syde:llm] openai error request=${req.requestId}:`, err.message ?? err)
         handlers.onError(err.message ?? String(err))
       }
     } finally {

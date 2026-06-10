@@ -1,5 +1,6 @@
+import { useEffect, useState } from 'react'
 import { useStore } from '../store'
-import type { ContextMode, Mode, ScopeLevel } from '../types'
+import type { ContextMode, Mode, ScopeLevel, SydeSettings } from '../types'
 
 const SCOPE_OPTIONS: { value: ScopeLevel; label: string; hint: string }[] = [
   { value: 'line', label: 'line', hint: 'cursor line only' },
@@ -11,8 +12,7 @@ const SCOPE_OPTIONS: { value: ScopeLevel; label: string; hint: string }[] = [
 
 const MODE_OPTIONS: { value: Mode; label: string; hint: string }[] = [
   { value: 'ask', label: 'ask', hint: 'read-only Q&A' },
-  { value: 'edit', label: 'edit', hint: 'apply directly to scope' },
-  { value: 'agent', label: 'agent', hint: 'multi-step edits' }
+  { value: 'edit', label: 'edit', hint: 'apply directly to scope' }
 ]
 
 const CONTEXT_OPTIONS: { value: ContextMode; label: string; hint: string }[] = [
@@ -96,6 +96,19 @@ export function ScopeBar() {
   const lastError = useStore((s) => s.lastError)
   const lastEvent = useStore((s) => s.lastEvent)
   const setLastError = useStore((s) => s.setLastError)
+
+  // Active provider + model badge — kept fresh by re-querying whenever a
+  // streaming run starts (which is when settings could most plausibly change).
+  const [settings, setSettings] = useState<SydeSettings | null>(null)
+  useEffect(() => {
+    let alive = true
+    void window.syde?.settings.get().then((s) => {
+      if (alive) setSettings(s)
+    })
+    return () => {
+      alive = false
+    }
+  }, [streamingId, lastEvent])
 
   const scopeBadge = (() => {
     if (scopeLevel === 'project') {
@@ -186,6 +199,21 @@ export function ScopeBar() {
           )}
         </div>
         <div className="flex flex-none items-center gap-2 text-fg-muted">
+          {settings && (
+            <>
+              <span
+                className="rounded bg-bg-subtle px-1.5 py-0.5 text-2xs text-fg-muted"
+                title={`Active LLM provider: ${settings.activeProvider} · model: ${settings.providers[settings.activeProvider].model}`}
+              >
+                {settings.activeProvider === 'anthropic' ? 'claude' : 'openai'}
+                <span className="mx-1 text-fg-dim">·</span>
+                <span className="font-mono text-fg-subtle">
+                  {settings.providers[settings.activeProvider].model}
+                </span>
+              </span>
+              <span className="text-fg-dim">·</span>
+            </>
+          )}
           <span
             className={`h-1.5 w-1.5 rounded-full ${SCOPE_COLORS[scopeLevel]}`}
           />

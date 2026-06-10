@@ -91,7 +91,7 @@ export function applyScopeDecoration(
 
 /**
  * Replace a scoped range in the active editor with a new string.
- * Used by the LLM in `edit` and `agent` modes to apply results.
+ * Used by the LLM in `edit` mode to apply results.
  */
 export function applyScopedEdit(range: ScopeRange, text: string): void {
   const ed = editorRef.current

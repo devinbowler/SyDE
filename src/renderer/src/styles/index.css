@@ -51,14 +51,14 @@
   --bg-raised: 234 234 240;
   --bg-hover: 228 228 235;
 
-  --border-subtle: 226 226 232;
-  --border: 213 213 221;
-  --border-strong: 192 192 202;
+  --border-subtle: 222 222 230;
+  --border: 200 200 212;
+  --border-strong: 175 175 188;
 
-  --fg-base: 24 24 30;
-  --fg-muted: 88 88 100;
-  --fg-subtle: 134 134 148;
-  --fg-dim: 180 180 192;
+  --fg-base: 18 18 24;
+  --fg-muted: 70 70 84;
+  --fg-subtle: 100 100 114;
+  --fg-dim: 138 138 152;
 
   --accent: 96 71 199;
   --accent-subtle: 145 124 220;

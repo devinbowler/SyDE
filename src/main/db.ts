@@ -1,7 +1,13 @@
 import Database from 'better-sqlite3'
 import path from 'path'
 import { app, safeStorage } from 'electron'
-import type { Mode, ScopeLevel, StoredMessage, StoredSession } from '@shared/types'
+import type {
+  Mode,
+  ScopeLevel,
+  SessionSummary,
+  StoredMessage,
+  StoredSession
+} from '@shared/types'
 
 let db: Database.Database | null = null
 
@@ -61,6 +67,39 @@ export function listSessions(limit = 50): StoredSession[] {
     'SELECT id, created_at, file_path FROM sessions ORDER BY created_at DESC LIMIT ?'
   )
   return stmt.all(limit) as StoredSession[]
+}
+
+/**
+ * Sessions enriched with message_count and the first user message — used to
+ * power the history dropdown so the user can see what each session was about.
+ * Empty sessions (no messages) are filtered out.
+ */
+export function listSessionSummaries(limit = 50): SessionSummary[] {
+  const stmt = getDb().prepare(`
+    SELECT
+      s.id,
+      s.created_at,
+      s.file_path,
+      (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count,
+      (SELECT m2.content
+         FROM messages m2
+         WHERE m2.session_id = s.id AND m2.role = 'user'
+         ORDER BY m2.id ASC
+         LIMIT 1) AS first_user_message
+    FROM sessions s
+    ORDER BY s.created_at DESC
+    LIMIT ?
+  `)
+  const rows = stmt.all(limit) as Array<{
+    id: number
+    created_at: number
+    file_path: string | null
+    message_count: number
+    first_user_message: string | null
+  }>
+  // Hide empty sessions (created when the user clicked "new" but never
+  // submitted) so the dropdown stays useful.
+  return rows.filter((r) => r.message_count > 0)
 }
 
 export function getMessages(sessionId: number): StoredMessage[] {

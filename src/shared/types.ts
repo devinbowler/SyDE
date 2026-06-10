@@ -1,4 +1,4 @@
-export type Mode = 'ask' | 'edit' | 'agent'
+export type Mode = 'ask' | 'edit'
 
 export type ScopeLevel = 'line' | 'block' | 'file' | 'project' | 'custom'
 
@@ -37,10 +37,15 @@ export interface LLMRequest {
   filePath?: string
 }
 
+export interface TokenUsage {
+  input: number
+  output: number
+}
+
 export type LLMStreamEvent =
   | { type: 'start'; requestId: string }
   | { type: 'delta'; requestId: string; text: string }
-  | { type: 'end'; requestId: string; fullText: string }
+  | { type: 'end'; requestId: string; fullText: string; usage?: TokenUsage }
   | { type: 'error'; requestId: string; error: string }
   | { type: 'apply'; requestId: string; range: ScopeRange; text: string }
 
@@ -65,6 +70,15 @@ export interface StoredSession {
   id: number
   created_at: number
   file_path: string | null
+}
+
+/** Sessions enriched with chat history metadata for the history dropdown. */
+export interface SessionSummary {
+  id: number
+  created_at: number
+  file_path: string | null
+  message_count: number
+  first_user_message: string | null
 }
 
 export interface TerminalSpawnOptions {
@@ -93,6 +107,7 @@ export const IPC = {
   // DB
   dbCreateSession: 'db:createSession',
   dbListSessions: 'db:listSessions',
+  dbListSessionSummaries: 'db:listSessionSummaries',
   dbGetMessages: 'db:getMessages',
   dbAppendMessage: 'db:appendMessage',
 
@@ -119,17 +134,33 @@ export const IPC = {
   fsCollectContext: 'fs:collectContext'
 } as const
 
-export interface SydeSettings {
+export type LLMProvider = 'anthropic' | 'openai'
+
+export interface ProviderSettings {
   hasApiKey: boolean
   apiKeySource: 'env' | 'stored' | 'none'
   model: string
+}
+
+export interface SydeSettings {
+  activeProvider: LLMProvider
+  providers: Record<LLMProvider, ProviderSettings>
   encryptionAvailable: boolean
+}
+
+export interface SettingsUpdate {
+  activeProvider?: LLMProvider
+  /** Update one provider's key and/or model. */
+  provider?: LLMProvider
+  apiKey?: string | null
+  model?: string | null
 }
 
 export interface KeyTestResult {
   ok: boolean
   error?: string
   model?: string
+  provider?: LLMProvider
 }
 
 export type ContextMode = 'none' | 'pinned' | 'file' | 'project'

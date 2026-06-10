@@ -27,27 +27,31 @@ const DARK_THEME: ITheme = {
   brightWhite: '#ffffff'
 }
 
+// Note on white/brightWhite: most shells (PowerShell included) emit
+// unstyled text as ANSI "white" (color 37). On a light background that
+// must be DARK to remain legible. We mirror the dark-theme convention
+// where `white` ≈ foreground and `brightWhite` is the most-emphasized.
 const LIGHT_THEME: ITheme = {
   background: '#fcfcfd',
   foreground: '#18181e',
   cursor: '#6047c7',
   selectionBackground: '#d8d4f4',
   black: '#18181e',
-  brightBlack: '#585864',
-  red: '#c83c64',
-  brightRed: '#a82850',
-  green: '#2c8a52',
-  brightGreen: '#1f6e3f',
-  yellow: '#b46a18',
-  brightYellow: '#a05810',
-  blue: '#1f6dbd',
-  brightBlue: '#155696',
-  magenta: '#6047c7',
-  brightMagenta: '#4a35a3',
-  cyan: '#1f8a82',
-  brightCyan: '#147068',
-  white: '#f0f0f4',
-  brightWhite: '#ffffff'
+  brightBlack: '#4a4a54',
+  red: '#b8344a',
+  brightRed: '#8a1f30',
+  green: '#1f6e3f',
+  brightGreen: '#155028',
+  yellow: '#a05810',
+  brightYellow: '#7a4208',
+  blue: '#1a5da3',
+  brightBlue: '#103f73',
+  magenta: '#5a3fb5',
+  brightMagenta: '#3d2980',
+  cyan: '#1a7a72',
+  brightCyan: '#0f5a54',
+  white: '#2a2a32',
+  brightWhite: '#000000'
 }
 
 interface TerminalDebug {

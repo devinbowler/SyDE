@@ -5,8 +5,7 @@ import type { Mode } from '../types'
 
 const MODE_RING: Record<Mode, string> = {
   ask: 'ring-fg-subtle/40',
-  edit: 'ring-accent/60',
-  agent: 'ring-scope-project/60'
+  edit: 'ring-accent/60'
 }
 
 export function PromptInput() {
@@ -38,9 +37,7 @@ export function PromptInput() {
   const placeholder =
     mode === 'ask'
       ? 'Ask a question about the scope…'
-      : mode === 'edit'
-      ? 'Describe the change to apply within scope…'
-      : 'Describe the multi-step task…'
+      : 'Describe the change to apply within scope…'
 
   return (
     <div className="flex items-end gap-2 border-t border-border-subtle bg-bg-panel px-3 py-2">

@@ -156,7 +156,8 @@ function TitleBar({
   const fontSize = useStore((s) => s.editorFontSize)
   const setEditorFontSize = useStore((s) => s.setEditorFontSize)
   const fileName = activeFilePath ? activeFilePath.split(/[\\/]/).pop() : null
-  const needsKey = settings && !settings.hasApiKey
+  const needsKey =
+    settings && !settings.providers[settings.activeProvider].hasApiKey
 
   return (
     <div className="flex h-8 select-none items-center justify-between border-b border-border-subtle bg-bg-panel px-3 text-2xs">
@@ -313,7 +314,7 @@ export function App() {
 
   // Auto-open the settings modal once on first launch when no key is found.
   useEffect(() => {
-    if (settings && !settings.hasApiKey) {
+    if (settings && !settings.providers[settings.activeProvider].hasApiKey) {
       const seen = (() => {
         try {
           return localStorage.getItem('syde:welcomed') === '1'
@@ -335,7 +336,7 @@ export function App() {
   return (
     <div className="flex h-full w-full flex-col bg-bg-base text-fg-base">
       <TitleBar settings={settings} onOpenSettings={() => setSettingsOpen(true)} />
-      {settings && !settings.hasApiKey && (
+      {settings && !settings.providers[settings.activeProvider].hasApiKey && (
         <NoKeyBanner onOpen={() => setSettingsOpen(true)} />
       )}
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />

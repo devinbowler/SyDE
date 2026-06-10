@@ -15,7 +15,9 @@ import { IPC } from '@shared/types'
 import type {
   CollectContextArgs,
   CollectedContext,
+  LLMProvider,
   LLMRequest,
+  SettingsUpdate,
   SydeSettings,
   TerminalSpawnOptions
 } from '@shared/types'
@@ -33,12 +35,22 @@ import {
   closeDatabase,
   createSession,
   listSessions,
+  listSessionSummaries,
   getMessages,
   appendMessage,
-  setSecret,
-  getSecret
+  setSecret
 } from './db'
-import { API_KEY_PREF, MODEL_PREF, LLMSession, getApiKeySource } from './llm'
+import {
+  ANTHROPIC_API_KEY_PREF,
+  ANTHROPIC_MODEL_PREF,
+  OPENAI_API_KEY_PREF,
+  OPENAI_MODEL_PREF,
+  ACTIVE_PROVIDER_PREF,
+  LLMSession,
+  getActiveProvider,
+  getApiKeySource,
+  getModelFor
+} from './llm'
 
 // node-pty is loaded lazily because it's a native module that may need rebuilding.
 type IPty = {
@@ -91,7 +103,7 @@ function createWindow(): void {
   Menu.setApplicationMenu(null)
 
   mainWindow = new BrowserWindow({
-    width: 1400,
+    width: 1800,
     height: 900,
     minWidth: 900,
     minHeight: 600,
@@ -186,6 +198,9 @@ function registerDbIPC(): void {
     createSession(filePath)
   )
   ipcMain.handle(IPC.dbListSessions, (_e, limit?: number) => listSessions(limit))
+  ipcMain.handle(IPC.dbListSessionSummaries, (_e, limit?: number) =>
+    listSessionSummaries(limit)
+  )
   ipcMain.handle(IPC.dbGetMessages, (_e, sessionId: number) => getMessages(sessionId))
   ipcMain.handle(IPC.dbAppendMessage, (_e, args) => appendMessage(args))
 }
@@ -198,8 +213,13 @@ function registerLLMIPC(): void {
       onStart: () => safeSend(IPC.llmStream, { type: 'start', requestId: req.requestId }),
       onDelta: (text) =>
         safeSend(IPC.llmStream, { type: 'delta', requestId: req.requestId, text }),
-      onEnd: (fullText) =>
-        safeSend(IPC.llmStream, { type: 'end', requestId: req.requestId, fullText }),
+      onEnd: (fullText, usage) =>
+        safeSend(IPC.llmStream, {
+          type: 'end',
+          requestId: req.requestId,
+          fullText,
+          usage
+        }),
       onError: (error) =>
         safeSend(IPC.llmStream, { type: 'error', requestId: req.requestId, error })
     })
@@ -416,52 +436,77 @@ function registerContextIPC(): void {
   )
 }
 
+function snapshotSettings(): SydeSettings {
+  return {
+    activeProvider: getActiveProvider(),
+    providers: {
+      anthropic: {
+        hasApiKey: getApiKeySource('anthropic') !== 'none',
+        apiKeySource: getApiKeySource('anthropic'),
+        model: getModelFor('anthropic')
+      },
+      openai: {
+        hasApiKey: getApiKeySource('openai') !== 'none',
+        apiKeySource: getApiKeySource('openai'),
+        model: getModelFor('openai')
+      }
+    },
+    encryptionAvailable: safeStorage.isEncryptionAvailable()
+  }
+}
+
 function registerSettingsIPC(): void {
-  ipcMain.handle(IPC.settingsGet, (): SydeSettings => {
-    return {
-      hasApiKey: getApiKeySource() !== 'none',
-      apiKeySource: getApiKeySource(),
-      model: process.env.SYDE_MODEL ?? getSecret(MODEL_PREF) ?? 'claude-sonnet-4-6',
-      encryptionAvailable: safeStorage.isEncryptionAvailable()
-    }
-  })
+  ipcMain.handle(IPC.settingsGet, (): SydeSettings => snapshotSettings())
 
   ipcMain.handle(
     IPC.settingsSet,
-    (_e, args: { apiKey?: string | null; model?: string | null }) => {
-      if (args.apiKey !== undefined) {
-        setSecret(API_KEY_PREF, args.apiKey ?? null)
+    (_e, args: SettingsUpdate): SydeSettings => {
+      if (args.activeProvider) {
+        setSecret(ACTIVE_PROVIDER_PREF, args.activeProvider)
         llm.invalidateClient()
       }
-      if (args.model !== undefined) {
-        setSecret(MODEL_PREF, args.model ?? null)
-        llm.invalidateClient()
+      if (args.provider) {
+        const isAnthropic = args.provider === 'anthropic'
+        if (args.apiKey !== undefined) {
+          setSecret(
+            isAnthropic ? ANTHROPIC_API_KEY_PREF : OPENAI_API_KEY_PREF,
+            args.apiKey ?? null
+          )
+          llm.invalidateClient()
+        }
+        if (args.model !== undefined) {
+          setSecret(
+            isAnthropic ? ANTHROPIC_MODEL_PREF : OPENAI_MODEL_PREF,
+            args.model ?? null
+          )
+          llm.invalidateClient()
+        }
       }
-      return {
-        hasApiKey: getApiKeySource() !== 'none',
-        apiKeySource: getApiKeySource(),
-        model: process.env.SYDE_MODEL ?? getSecret(MODEL_PREF) ?? 'claude-sonnet-4-6',
-        encryptionAvailable: safeStorage.isEncryptionAvailable()
-      } satisfies SydeSettings
+      return snapshotSettings()
     }
   )
 
-  ipcMain.handle(IPC.settingsTestKey, async (_e, key: string) => {
-    return llm.testKey(key)
-  })
+  ipcMain.handle(
+    IPC.settingsTestKey,
+    async (_e, args: { provider: LLMProvider; key: string }) => {
+      return llm.testKey(args.provider, args.key)
+    }
+  )
 }
 
 app.whenReady().then(() => {
   initDatabase()
 
-  const src = getApiKeySource()
+  const provider = getActiveProvider()
+  const src = getApiKeySource(provider)
+  const model = getModelFor(provider)
   if (src === 'env') {
-    console.log('[syde] using ANTHROPIC_API_KEY from environment')
+    console.log(`[syde] active provider=${provider} model=${model} (key from env)`)
   } else if (src === 'stored') {
-    console.log('[syde] using stored Anthropic API key (encrypted on disk)')
+    console.log(`[syde] active provider=${provider} model=${model} (key stored, encrypted)`)
   } else {
     console.warn(
-      '[syde] no Anthropic API key configured — open Settings (gear icon) inside SyDE to add one.'
+      `[syde] active provider=${provider} but no API key configured — open Settings (gear icon) inside SyDE to add one.`
     )
   }
 

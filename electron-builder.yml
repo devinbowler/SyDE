@@ -1,0 +1,74 @@
+appId: com.devinbowler.syde
+productName: SyDE
+copyright: Copyright © 2026 ${author}
+
+# ASAR keeps the JS bundle as one read-only archive — fast startup, smaller
+# installer. Native binaries (.node addons, node-pty's win helpers, sqlite)
+# MUST live outside the archive or they can't be loaded by the OS at runtime.
+asar: true
+asarUnpack:
+  - "**/*.{node,dll,exe}"
+  - "**/node_modules/node-pty/**"
+  - "**/node_modules/better-sqlite3/build/**"
+
+directories:
+  output: release
+  buildResources: build
+
+# Only ship the built renderer/main/preload + package.json. electron-builder
+# automatically pulls in production dependencies from node_modules.
+files:
+  - "out/**/*"
+  - "package.json"
+  - "!**/*.map"
+
+# ── Windows ───────────────────────────────────────────────────────────────
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+  # icon: build/icon.ico    # add a 256×256+ .ico here for a branded installer
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: SyDE
+  artifactName: "${productName}-Setup-${version}.${ext}"
+
+portable:
+  artifactName: "${productName}-Portable-${version}.${ext}"
+
+# ── macOS ─────────────────────────────────────────────────────────────────
+mac:
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+  category: public.app-category.developer-tools
+  # icon: build/icon.icns
+
+dmg:
+  artifactName: "${productName}-${version}-${arch}.${ext}"
+
+# ── Linux ─────────────────────────────────────────────────────────────────
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  category: Development
+  # icon: build/icon.png
+
+appImage:
+  artifactName: "${productName}-${version}.${ext}"
+
+# Don't auto-publish to a release server.
+publish: null

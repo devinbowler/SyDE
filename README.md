@@ -6,7 +6,7 @@ A personal IDE built around intentional, scope-limited LLM assistance — the an
 
 - **Scope** — what the LLM can touch (`line` / `block` / `file` / `project` / `custom`)
 - **Context** — what the LLM can see (file-tree checkboxes pin files into the prompt)
-- **Mode** — how the LLM behaves (`ask` / `edit` / `agent`)
+- **Mode** — how the LLM behaves (`ask` / `edit`)
 
 ## Stack
 
@@ -47,11 +47,43 @@ Optional overrides:
 npm run dev
 ```
 
-## Build
+## Build a distributable
+
+`electron-builder` is wired up. Run from the platform you want to ship for:
 
 ```bash
-npm run build
+# Windows: produces a Setup .exe (NSIS) + a Portable .exe
+npm run dist:win
+
+# macOS: produces a .dmg for x64 and arm64
+npm run dist:mac
+
+# Linux: produces an AppImage
+npm run dist:linux
+
+# Build for the current platform (whatever you're on)
+npm run dist
+
+# Or just bundle the unpacked app (no installer) into release/<platform>-unpacked/
+npm run pack
 ```
+
+Output goes to `release/`. The Windows installer ends up at
+`release/SyDE-Setup-0.1.0.exe`; the portable build at
+`release/SyDE-Portable-0.1.0.exe`. macOS DMGs and Linux AppImages follow
+similar names.
+
+### Notes for distribution
+
+- **Cross-compilation** is limited. Build Windows installers on Windows, macOS DMGs on macOS, etc. (electron-builder can sometimes cross-build with extra tooling — easier to just build on each OS.)
+- **Unsigned builds**: SyDE doesn't sign its binaries. On Windows, SmartScreen will warn users with an "unknown publisher" dialog (click *More info → Run anyway*). On macOS, recipients need to right-click → *Open* the first time, or run `xattr -d com.apple.quarantine /Applications/SyDE.app`.
+- **Icons**: drop a 256×256+ `icon.ico` (Windows), `icon.icns` (macOS), or 512×512 `icon.png` (Linux) into `build/` and uncomment the matching `icon:` line in `electron-builder.yml` to brand the installer.
+- **API keys aren't bundled.** Recipients install the app, open Settings (gear icon), and paste their own Anthropic key. It's stored encrypted via the OS keychain (DPAPI on Windows, Keychain on macOS).
+
+### Troubleshooting
+
+- **Windows: `Cannot create symbolic link` during the first build.** electron-builder caches its signing tools as a `.7z` whose macOS dylib symlinks Windows refuses to create without elevated privileges. Either enable *Settings → For Developers → Developer Mode* (then re-run `npm run dist:win`), or run PowerShell once as Administrator for the first build. Subsequent builds reuse the cache and work without elevation.
+- **Native module errors (`better-sqlite3` / `node-pty`) at runtime.** Run `npm run rebuild` — that recompiles them against Electron's Node ABI. The `postinstall` hook does this automatically after `npm install`, but if you change Electron versions you'll need to re-run it.
 
 ## Layout
 

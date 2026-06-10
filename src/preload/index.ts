@@ -5,10 +5,13 @@ import type {
   CollectedContext,
   FileTreeNode,
   KeyTestResult,
+  LLMProvider,
   LLMRequest,
   LLMStreamEvent,
   Mode,
   ScopeLevel,
+  SessionSummary,
+  SettingsUpdate,
   StoredMessage,
   StoredSession,
   SydeSettings,
@@ -51,6 +54,8 @@ const api = {
       ipcRenderer.invoke(IPC.dbCreateSession, filePath),
     listSessions: (limit?: number): Promise<StoredSession[]> =>
       ipcRenderer.invoke(IPC.dbListSessions, limit),
+    listSessionSummaries: (limit?: number): Promise<SessionSummary[]> =>
+      ipcRenderer.invoke(IPC.dbListSessionSummaries, limit),
     getMessages: (sessionId: number): Promise<StoredMessage[]> =>
       ipcRenderer.invoke(IPC.dbGetMessages, sessionId),
     appendMessage: (args: {
@@ -112,12 +117,10 @@ const api = {
   // settings
   settings: {
     get: (): Promise<SydeSettings> => ipcRenderer.invoke(IPC.settingsGet),
-    set: (args: {
-      apiKey?: string | null
-      model?: string | null
-    }): Promise<SydeSettings> => ipcRenderer.invoke(IPC.settingsSet, args),
-    testKey: (key: string): Promise<KeyTestResult> =>
-      ipcRenderer.invoke(IPC.settingsTestKey, key)
+    set: (args: SettingsUpdate): Promise<SydeSettings> =>
+      ipcRenderer.invoke(IPC.settingsSet, args),
+    testKey: (provider: LLMProvider, key: string): Promise<KeyTestResult> =>
+      ipcRenderer.invoke(IPC.settingsTestKey, { provider, key })
   }
 }
 

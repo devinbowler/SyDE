@@ -9,6 +9,7 @@ import {
 import type {
   ChatItem,
   ContextFile,
+  EditSummary,
   LLMRequest,
   LLMStreamEvent,
   Mode,
@@ -28,6 +29,61 @@ function stripCodeFence(s: string): string {
   const m = fence.exec(trimmed)
   if (m && m[1] !== undefined) return m[1]
   return s
+}
+
+function countLines(s: string): number {
+  if (!s) return 0
+  return s.split(/\r\n|\r|\n/).length
+}
+
+function displayPathFor(filePath: string | null, root: string | null): string {
+  if (!filePath) return '(no file)'
+  if (root) {
+    // Naive prefix-strip — works for both fwd and back slashes on Windows.
+    const norm = (p: string) => p.replace(/\\/g, '/')
+    const f = norm(filePath)
+    const r = norm(root.endsWith('/') ? root : root + '/')
+    if (f.startsWith(r)) return filePath.slice(root.length + 1)
+  }
+  // Fallback: last 2 path segments.
+  const segs = filePath.split(/[/\\]/).filter(Boolean)
+  return segs.slice(-2).join('/') || filePath
+}
+
+function buildEditSummary(
+  prevContent: string,
+  newContent: string,
+  scopeLevel: ScopeLevel,
+  range: ScopeRange | null,
+  filePath: string | null,
+  workspaceRoot: string | null
+): EditSummary {
+  const startLine = range?.startLine ?? 1
+  const endLine = range?.endLine ?? countLines(prevContent)
+  return {
+    filePath,
+    scopeLevel,
+    startLine,
+    endLine,
+    prevLines: countLines(prevContent),
+    newLines: countLines(newContent),
+    prevChars: prevContent.length,
+    newChars: newContent.length,
+    displayPath: displayPathFor(filePath, workspaceRoot)
+  }
+}
+
+function summaryToText(s: EditSummary): string {
+  const verb =
+    s.scopeLevel === 'file' || s.scopeLevel === 'project' ? 'Rewrote' : 'Edited'
+  const lineDelta = s.newLines - s.prevLines
+  const charDelta = s.newChars - s.prevChars
+  const sign = (n: number) => (n > 0 ? `+${n}` : `${n}`)
+  const range =
+    s.scopeLevel === 'file' || s.scopeLevel === 'project'
+      ? `whole file (${s.prevLines} → ${s.newLines} lines)`
+      : `L${s.startLine}–L${s.endLine} (${s.prevLines} → ${s.newLines} lines)`
+  return `${verb} ${s.displayPath} · ${range} · ${sign(lineDelta)} lines · ${sign(charDelta)} chars`
 }
 
 interface SubmitArgs {
@@ -63,6 +119,11 @@ export function useLLM() {
         scopeLevel: ScopeLevel
         scopeRange: ScopeRange | null
         accum: string
+        // Captured at submit time so we can produce an edit summary after
+        // the model finishes — without re-reading the file from disk.
+        prevContent: string
+        filePath: string | null
+        workspaceRoot: string | null
       }
     >()
   )
@@ -86,48 +147,100 @@ export function useLLM() {
 
       if (event.type === 'delta') {
         entry.accum += event.text
-        // Show streaming text in the chat panel for ALL modes so the user
-        // can see what's happening; in edit mode the editor gets the final.
-        patchChat(entry.chatItemId, { content: entry.accum, streaming: true })
+        if (entry.mode === 'ask') {
+          // Ask mode: stream the answer directly into the bubble.
+          patchChat(entry.chatItemId, { content: entry.accum, streaming: true })
+        } else {
+          // Edit mode: don't dump code into the chat — the editor itself
+          // will receive the final patch. Just show progress.
+          patchChat(entry.chatItemId, {
+            streaming: true,
+            streamProgress: entry.accum.length
+          })
+        }
         setLastEvent(`streaming · ${entry.accum.length} chars`)
         return
       }
 
       if (event.type === 'end') {
         const finalText = event.fullText || entry.accum
-        const cleaned =
-          entry.mode === 'edit' || entry.mode === 'agent'
-            ? stripCodeFence(finalText)
-            : finalText
-        patchChat(entry.chatItemId, {
-          content: cleaned,
-          streaming: false
-        })
 
-        // Apply to editor in edit/agent mode.
-        if (entry.mode === 'edit' || entry.mode === 'agent') {
+        if (entry.mode === 'edit') {
+          const cleaned = stripCodeFence(finalText)
+
+          // Apply to editor in edit mode.
           if (entry.scopeLevel === 'file' || entry.scopeLevel === 'project') {
             applyFullFileEdit(cleaned)
           } else if (entry.scopeRange) {
             applyScopedEdit(entry.scopeRange, cleaned)
           }
-        }
 
-        // Persist assistant message.
-        const sid = useStore.getState().sessionId
-        if (sid) {
-          void window.syde.db.appendMessage({
-            sessionId: sid,
-            role: 'assistant',
-            content: cleaned,
-            scopeLevel: entry.scopeLevel,
-            mode: entry.mode
+          const summary = buildEditSummary(
+            entry.prevContent,
+            cleaned,
+            entry.scopeLevel,
+            entry.scopeRange,
+            entry.filePath,
+            entry.workspaceRoot
+          )
+          const summaryText = summaryToText(summary)
+
+          patchChat(entry.chatItemId, {
+            content: summaryText,
+            streaming: false,
+            streamProgress: undefined,
+            editSummary: summary,
+            usage: event.usage
           })
+
+          // Persist the SUMMARY (not the code) so the chat history reads back
+          // as an edit log instead of duplicating file contents.
+          const sid = useStore.getState().sessionId
+          if (sid) {
+            void window.syde.db.appendMessage({
+              sessionId: sid,
+              role: 'assistant',
+              content: summaryText,
+              scopeLevel: entry.scopeLevel,
+              mode: entry.mode
+            })
+          }
+
+          setLastEvent(
+            `${summary.scopeLevel} edit · ${summary.prevLines}→${summary.newLines} lines${
+              event.usage
+                ? ` · ${event.usage.input}/${event.usage.output} tok`
+                : ''
+            }`
+          )
+        } else {
+          // Ask mode: keep the answer text as the bubble content.
+          patchChat(entry.chatItemId, {
+            content: finalText,
+            streaming: false,
+            usage: event.usage
+          })
+          const sid = useStore.getState().sessionId
+          if (sid) {
+            void window.syde.db.appendMessage({
+              sessionId: sid,
+              role: 'assistant',
+              content: finalText,
+              scopeLevel: entry.scopeLevel,
+              mode: entry.mode
+            })
+          }
+          setLastEvent(
+            `done · ${finalText.length} chars${
+              event.usage
+                ? ` · ${event.usage.input}/${event.usage.output} tok`
+                : ''
+            }`
+          )
         }
 
         inflight.current.delete(event.requestId)
         setStreamingId(null)
-        setLastEvent(`done · ${cleaned.length} chars`)
         return
       }
 
@@ -135,6 +248,7 @@ export function useLLM() {
         patchChat(entry.chatItemId, {
           content: `Error: ${event.error}`,
           streaming: false,
+          streamProgress: undefined,
           error: event.error
         })
         inflight.current.delete(event.requestId)
@@ -355,7 +469,10 @@ export function useLLM() {
         mode,
         scopeLevel,
         scopeRange: effectiveRange,
-        accum: ''
+        accum: '',
+        prevContent: scopeContent,
+        filePath: activeFilePath ?? null,
+        workspaceRoot: workspaceRoot ?? null
       })
 
       try {

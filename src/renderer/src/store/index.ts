@@ -67,6 +67,7 @@ interface SydeState {
   setSessionId: (id: number | null) => void
   appendChat: (item: ChatItem) => void
   patchChat: (id: string, patch: Partial<ChatItem>) => void
+  setChat: (items: ChatItem[]) => void
   setStreamingId: (id: string | null) => void
   clearChat: () => void
   setLastError: (err: string | null) => void
@@ -177,6 +178,7 @@ export const useStore = create<SydeState>((set) => ({
     set((s) => ({
       chat: s.chat.map((m) => (m.id === id ? { ...m, ...patch } : m))
     })),
+  setChat: (items) => set({ chat: items, lastError: null, lastEvent: null }),
   setStreamingId: (id) => set({ streamingId: id }),
   clearChat: () => set({ chat: [], lastError: null, lastEvent: null }),
   setLastError: (err) => set({ lastError: err }),
