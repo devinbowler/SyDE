@@ -54,8 +54,11 @@ interface SydeState {
   togglePinned: (p: string) => void
   setPinned: (paths: string[]) => void
   clearPinned: () => void
+  unpinMatching: (prefix: string) => void
 
   openFile: (path: string, content: string, language: string) => void
+  closeActiveFile: () => void
+  onPathDeleted: (deletedPath: string) => void
   setActiveContent: (content: string, dirty?: boolean) => void
   markSaved: () => void
 
@@ -154,6 +157,17 @@ export const useStore = create<SydeState>((set) => ({
     }),
   setPinned: (paths) => set({ pinnedFiles: new Set(paths) }),
   clearPinned: () => set({ pinnedFiles: new Set() }),
+  unpinMatching: (prefix) =>
+    set((s) => {
+      const norm = prefix.replace(/\\/g, '/')
+      const next = new Set(
+        [...s.pinnedFiles].filter((p) => {
+          const np = p.replace(/\\/g, '/')
+          return np !== norm && !np.startsWith(norm + '/')
+        })
+      )
+      return { pinnedFiles: next }
+    }),
 
   openFile: (p, content, language) =>
     set({
@@ -162,6 +176,39 @@ export const useStore = create<SydeState>((set) => ({
       activeDirty: false,
       activeLanguage: language,
       scopeRange: null
+    }),
+  closeActiveFile: () =>
+    set({
+      activeFilePath: null,
+      activeContent: '',
+      activeDirty: false,
+      activeLanguage: 'plaintext',
+      scopeRange: null
+    }),
+  onPathDeleted: (deletedPath) =>
+    set((s) => {
+      const norm = deletedPath.replace(/\\/g, '/')
+      const active = s.activeFilePath?.replace(/\\/g, '/')
+      const closeActive =
+        active === norm || (active?.startsWith(norm + '/') ?? false)
+
+      const nextPinned = new Set(
+        [...s.pinnedFiles].filter((p) => {
+          const np = p.replace(/\\/g, '/')
+          return np !== norm && !np.startsWith(norm + '/')
+        })
+      )
+
+      if (!closeActive) return { pinnedFiles: nextPinned }
+
+      return {
+        pinnedFiles: nextPinned,
+        activeFilePath: null,
+        activeContent: '',
+        activeDirty: false,
+        activeLanguage: 'plaintext',
+        scopeRange: null
+      }
     }),
   setActiveContent: (content, dirty = true) =>
     set({ activeContent: content, activeDirty: dirty }),

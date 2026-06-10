@@ -25,6 +25,10 @@ import {
   readDirectoryTree,
   readFileSafe,
   writeFileSafe,
+  createFileSafe,
+  createDirectorySafe,
+  deletePathSafe,
+  assertWithinRoot,
   startWatching,
   stopWatching,
   stopAllWatchers,
@@ -103,7 +107,7 @@ function createWindow(): void {
   Menu.setApplicationMenu(null)
 
   mainWindow = new BrowserWindow({
-    width: 1800,
+    width: 1600,
     height: 900,
     minWidth: 900,
     minHeight: 600,
@@ -161,6 +165,35 @@ function registerFileSystemIPC(): void {
     await writeFileSafe(filePath, content)
     return true
   })
+
+  ipcMain.handle(
+    IPC.fsCreateFile,
+    async (_e, args: { rootPath: string; filePath: string; content?: string }) => {
+      const safe = assertWithinRoot(args.filePath, args.rootPath)
+      await createFileSafe(safe, args.content ?? '')
+      return safe
+    }
+  )
+
+  ipcMain.handle(
+    IPC.fsCreateDir,
+    async (_e, args: { rootPath: string; dirPath: string }) => {
+      const safe = assertWithinRoot(args.dirPath, args.rootPath)
+      await createDirectorySafe(safe)
+      return safe
+    }
+  )
+
+  ipcMain.handle(
+    IPC.fsDelete,
+    async (_e, args: { rootPath: string; targetPath: string }) => {
+      const root = path.resolve(args.rootPath)
+      const safe = assertWithinRoot(args.targetPath, args.rootPath)
+      if (safe === root) throw new Error('Cannot delete workspace root')
+      await deletePathSafe(safe)
+      return true
+    }
+  )
 
   ipcMain.handle(IPC.fsOpenDirDialog, async () => {
     if (!mainWindow) return null

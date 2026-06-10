@@ -27,6 +27,15 @@ const api = {
       ipcRenderer.invoke(IPC.fsReadFile, filePath),
     writeFile: (filePath: string, content: string): Promise<boolean> =>
       ipcRenderer.invoke(IPC.fsWriteFile, filePath, content),
+    createFile: (args: {
+      rootPath: string
+      filePath: string
+      content?: string
+    }): Promise<string> => ipcRenderer.invoke(IPC.fsCreateFile, args),
+    createDir: (args: { rootPath: string; dirPath: string }): Promise<string> =>
+      ipcRenderer.invoke(IPC.fsCreateDir, args),
+    delete: (args: { rootPath: string; targetPath: string }): Promise<boolean> =>
+      ipcRenderer.invoke(IPC.fsDelete, args),
     openDirDialog: (): Promise<string | null> =>
       ipcRenderer.invoke(IPC.fsOpenDirDialog),
     openFileDialog: (): Promise<string | null> =>

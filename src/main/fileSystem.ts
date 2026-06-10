@@ -95,6 +95,72 @@ export async function writeFileSafe(filePath: string, content: string): Promise<
   await fs.writeFile(filePath, content, 'utf8')
 }
 
+export function assertWithinRoot(targetPath: string, rootPath: string): string {
+  const resolved = path.resolve(targetPath)
+  const root = path.resolve(rootPath)
+  const rel = path.relative(root, resolved)
+  if (rel === '' || rel === '.') return resolved
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error('Path is outside workspace')
+  }
+  return resolved
+}
+
+export async function createFileSafe(filePath: string, content = ''): Promise<void> {
+  const parent = path.dirname(filePath)
+  try {
+    const stat = await fs.stat(parent)
+    if (!stat.isDirectory()) throw new Error('Parent is not a directory')
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error('Parent folder does not exist')
+    }
+    throw e
+  }
+
+  try {
+    await fs.access(filePath)
+    throw new Error('File already exists')
+  } catch (e) {
+    if ((e as Error).message === 'File already exists') throw e
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
+  }
+
+  await fs.writeFile(filePath, content, 'utf8')
+}
+
+export async function createDirectorySafe(dirPath: string): Promise<void> {
+  const parent = path.dirname(dirPath)
+  try {
+    const stat = await fs.stat(parent)
+    if (!stat.isDirectory()) throw new Error('Parent is not a directory')
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error('Parent folder does not exist')
+    }
+    throw e
+  }
+
+  try {
+    await fs.access(dirPath)
+    throw new Error('Folder already exists')
+  } catch (e) {
+    if ((e as Error).message === 'Folder already exists') throw e
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
+  }
+
+  await fs.mkdir(dirPath)
+}
+
+export async function deletePathSafe(targetPath: string): Promise<void> {
+  const stat = await fs.stat(targetPath)
+  if (stat.isDirectory()) {
+    await fs.rm(targetPath, { recursive: true })
+  } else {
+    await fs.unlink(targetPath)
+  }
+}
+
 const watchers = new Map<string, FSWatcher>()
 
 export function startWatching(

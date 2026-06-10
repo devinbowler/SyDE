@@ -8,6 +8,7 @@ export function useFileTree() {
   const setWorkspaceRoot = useStore((s) => s.setWorkspaceRoot)
   const setFileTree = useStore((s) => s.setFileTree)
   const openFile = useStore((s) => s.openFile)
+  const onPathDeleted = useStore((s) => s.onPathDeleted)
 
   const refresh = useCallback(async () => {
     if (!workspaceRoot) return
@@ -55,7 +56,80 @@ export function useFileTree() {
     }
   }, [workspaceRoot, refresh])
 
-  return { workspaceRoot, fileTree, openWorkspace, openFromPath, refresh }
+  const createFile = useCallback(
+    async (parentDir: string, name: string) => {
+      if (!workspaceRoot) return null
+      const trimmed = name.trim()
+      if (!trimmed) return null
+      const sep = parentDir.includes('\\') ? '\\' : '/'
+      const filePath = `${parentDir}${parentDir.endsWith(sep) ? '' : sep}${trimmed}`
+      try {
+        const created = await window.syde.fs.createFile({
+          rootPath: workspaceRoot,
+          filePath,
+          content: ''
+        })
+        await refresh()
+        return created
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error('Failed to create file:', e)
+        return null
+      }
+    },
+    [workspaceRoot, refresh]
+  )
+
+  const createFolder = useCallback(
+    async (parentDir: string, name: string) => {
+      if (!workspaceRoot) return null
+      const trimmed = name.trim()
+      if (!trimmed) return null
+      const sep = parentDir.includes('\\') ? '\\' : '/'
+      const dirPath = `${parentDir}${parentDir.endsWith(sep) ? '' : sep}${trimmed}`
+      try {
+        const created = await window.syde.fs.createDir({
+          rootPath: workspaceRoot,
+          dirPath
+        })
+        await refresh()
+        return created
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error('Failed to create folder:', e)
+        return null
+      }
+    },
+    [workspaceRoot, refresh]
+  )
+
+  const deleteItem = useCallback(
+    async (targetPath: string) => {
+      if (!workspaceRoot) return false
+      try {
+        await window.syde.fs.delete({ rootPath: workspaceRoot, targetPath })
+        onPathDeleted(targetPath)
+        await refresh()
+        return true
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error('Failed to delete:', e)
+        return false
+      }
+    },
+    [workspaceRoot, refresh, onPathDeleted]
+  )
+
+  return {
+    workspaceRoot,
+    fileTree,
+    openWorkspace,
+    openFromPath,
+    refresh,
+    createFile,
+    createFolder,
+    deleteItem
+  }
 }
 
 export function flattenFiles(

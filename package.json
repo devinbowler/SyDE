@@ -1,7 +1,7 @@
 {
   "name": "syde",
   "productName": "SyDE",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "SyDE — a personal IDE built around intentional, scope-limited LLM assistance.",
   "main": "out/main/index.js",
   "author": "Devin Bowler",

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { useFileTree } from '../hooks/useFileTree'
 import type { FileTreeNode } from '../types'
@@ -6,7 +6,20 @@ import type { FileTreeNode } from '../types'
 interface NodeProps {
   node: FileTreeNode
   depth: number
+  workspaceRoot: string
   onOpen: (p: string) => void
+  onContextMenu: (e: React.MouseEvent, node: FileTreeNode) => void
+}
+
+interface ContextMenuState {
+  x: number
+  y: number
+  node: FileTreeNode
+}
+
+interface CreateState {
+  parentDir: string
+  type: 'file' | 'folder'
 }
 
 function Chevron({ open }: { open: boolean }) {
@@ -101,7 +114,13 @@ function Checkbox({
   )
 }
 
-function TreeNode({ node, depth, onOpen }: NodeProps) {
+function TreeNode({
+  node,
+  depth,
+  workspaceRoot,
+  onOpen,
+  onContextMenu
+}: NodeProps) {
   const [open, setOpen] = useState(depth < 1)
   const activeFilePath = useStore((s) => s.activeFilePath)
   const pinnedFiles = useStore((s) => s.pinnedFiles)
@@ -115,6 +134,7 @@ function TreeNode({ node, depth, onOpen }: NodeProps) {
       <div>
         <div
           onClick={() => setOpen((o) => !o)}
+          onContextMenu={(e) => onContextMenu(e, node)}
           className="group flex cursor-pointer items-center gap-1.5 rounded-sm px-1.5 py-0.5 hover:bg-bg-hover"
           style={{ paddingLeft: depth * 12 + 6 }}
         >
@@ -125,7 +145,14 @@ function TreeNode({ node, depth, onOpen }: NodeProps) {
         {open && (
           <div>
             {(node.children ?? []).map((c) => (
-              <TreeNode key={c.path} node={c} depth={depth + 1} onOpen={onOpen} />
+              <TreeNode
+                key={c.path}
+                node={c}
+                depth={depth + 1}
+                workspaceRoot={workspaceRoot}
+                onOpen={onOpen}
+                onContextMenu={onContextMenu}
+              />
             ))}
           </div>
         )}
@@ -136,6 +163,7 @@ function TreeNode({ node, depth, onOpen }: NodeProps) {
   return (
     <div
       onClick={() => onOpen(node.path)}
+      onContextMenu={(e) => onContextMenu(e, node)}
       className={`group flex cursor-pointer items-center gap-1.5 rounded-sm px-1.5 py-0.5 ${
         isActive ? 'bg-bg-raised text-fg-base' : 'text-fg-muted hover:bg-bg-hover'
       }`}
@@ -148,15 +176,131 @@ function TreeNode({ node, depth, onOpen }: NodeProps) {
   )
 }
 
+function CreateInput({
+  type,
+  onSubmit,
+  onCancel
+}: {
+  type: 'file' | 'folder'
+  onSubmit: (name: string) => void
+  onCancel: () => void
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    inputRef.current?.focus()
+  }, [])
+
+  return (
+    <div className="border-b border-border-subtle px-3 py-2">
+      <div className="mb-1 text-2xs text-fg-dim">
+        New {type === 'file' ? 'file' : 'folder'}
+      </div>
+      <input
+        ref={inputRef}
+        type="text"
+        placeholder={type === 'file' ? 'filename.ts' : 'folder-name'}
+        className="w-full rounded border border-border-subtle bg-bg-subtle px-2 py-1 text-xs text-fg-base outline-none focus:border-accent"
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            onSubmit(e.currentTarget.value)
+          } else if (e.key === 'Escape') {
+            e.preventDefault()
+            onCancel()
+          }
+        }}
+        onBlur={() => onCancel()}
+      />
+    </div>
+  )
+}
+
 export function FileTree() {
-  const { workspaceRoot, fileTree, openWorkspace, openFromPath, refresh } =
-    useFileTree()
+  const {
+    workspaceRoot,
+    fileTree,
+    openWorkspace,
+    openFromPath,
+    refresh,
+    createFile,
+    createFolder,
+    deleteItem
+  } = useFileTree()
   const pinnedCount = useStore((s) => s.pinnedFiles.size)
   const clearPinned = useStore((s) => s.clearPinned)
   const toggleLeft = useStore((s) => s.toggleLeft)
 
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
+  const [creating, setCreating] = useState<CreateState | null>(null)
+
+  const closeContextMenu = useCallback(() => setContextMenu(null), [])
+
+  useEffect(() => {
+    if (!contextMenu) return
+    const onClick = () => closeContextMenu()
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeContextMenu()
+    }
+    window.addEventListener('click', onClick)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('click', onClick)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [contextMenu, closeContextMenu])
+
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent, node: FileTreeNode) => {
+      e.preventDefault()
+      e.stopPropagation()
+      setContextMenu({ x: e.clientX, y: e.clientY, node })
+    },
+    []
+  )
+
+  const startCreate = useCallback(
+    (parentDir: string, type: 'file' | 'folder') => {
+      closeContextMenu()
+      setCreating({ parentDir, type })
+    },
+    [closeContextMenu]
+  )
+
+  const handleCreateSubmit = useCallback(
+    async (name: string) => {
+      if (!creating) return
+      const { parentDir, type } = creating
+      setCreating(null)
+      const trimmed = name.trim()
+      if (!trimmed) return
+
+      if (type === 'file') {
+        const path = await createFile(parentDir, trimmed)
+        if (path) void openFromPath(path)
+      } else {
+        await createFolder(parentDir, trimmed)
+      }
+    },
+    [creating, createFile, createFolder, openFromPath]
+  )
+
+  const handleDelete = useCallback(
+    async (node: FileTreeNode) => {
+      closeContextMenu()
+      const label = node.isDirectory ? 'folder' : 'file'
+      const ok = window.confirm(`Delete ${label} "${node.name}"?`)
+      if (!ok) return
+      await deleteItem(node.path)
+    },
+    [closeContextMenu, deleteItem]
+  )
+
+  const isWorkspaceRoot = (node: FileTreeNode) =>
+    workspaceRoot !== null && node.path === workspaceRoot
+
   return (
-    <div className="flex h-full flex-col bg-bg-panel">
+    <div className="relative flex h-full flex-col bg-bg-panel">
       <div className="flex items-center justify-between border-b border-border-subtle px-3 py-2">
         <div className="flex items-center gap-2">
           <span className="text-2xs uppercase tracking-[0.2em] text-fg-dim">
@@ -172,6 +316,24 @@ export function FileTree() {
           )}
         </div>
         <div className="flex items-center gap-1">
+          {workspaceRoot && (
+            <>
+              <button
+                onClick={() => startCreate(workspaceRoot, 'file')}
+                className="rounded px-1.5 py-0.5 text-2xs text-fg-subtle hover:bg-bg-hover hover:text-fg-muted"
+                title="New file"
+              >
+                + file
+              </button>
+              <button
+                onClick={() => startCreate(workspaceRoot, 'folder')}
+                className="rounded px-1.5 py-0.5 text-2xs text-fg-subtle hover:bg-bg-hover hover:text-fg-muted"
+                title="New folder"
+              >
+                + folder
+              </button>
+            </>
+          )}
           {pinnedCount > 0 && (
             <button
               onClick={clearPinned}
@@ -209,8 +371,16 @@ export function FileTree() {
         </div>
       )}
 
+      {creating && (
+        <CreateInput
+          type={creating.type}
+          onSubmit={(name) => void handleCreateSubmit(name)}
+          onCancel={() => setCreating(null)}
+        />
+      )}
+
       <div className="flex-1 overflow-auto py-1">
-        {!fileTree ? (
+        {!fileTree || !workspaceRoot ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 px-4 text-center">
             <div className="text-xs text-fg-muted">No workspace open.</div>
             <button
@@ -222,7 +392,13 @@ export function FileTree() {
           </div>
         ) : (
           <div className="px-1">
-            <TreeNode node={fileTree} depth={0} onOpen={openFromPath} />
+            <TreeNode
+              node={fileTree}
+              depth={0}
+              workspaceRoot={workspaceRoot}
+              onOpen={openFromPath}
+              onContextMenu={handleContextMenu}
+            />
           </div>
         )}
       </div>
@@ -235,6 +411,39 @@ export function FileTree() {
           >
             change folder
           </button>
+        </div>
+      )}
+
+      {contextMenu && (
+        <div
+          className="fixed z-50 min-w-[140px] rounded-md border border-border-subtle bg-bg-panel py-1 shadow-lg"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {contextMenu.node.isDirectory && (
+            <>
+              <button
+                className="block w-full px-3 py-1.5 text-left text-xs text-fg-muted hover:bg-bg-hover"
+                onClick={() => startCreate(contextMenu.node.path, 'file')}
+              >
+                New file
+              </button>
+              <button
+                className="block w-full px-3 py-1.5 text-left text-xs text-fg-muted hover:bg-bg-hover"
+                onClick={() => startCreate(contextMenu.node.path, 'folder')}
+              >
+                New folder
+              </button>
+            </>
+          )}
+          {!isWorkspaceRoot(contextMenu.node) && (
+            <button
+              className="block w-full px-3 py-1.5 text-left text-xs text-red-400 hover:bg-bg-hover"
+              onClick={() => void handleDelete(contextMenu.node)}
+            >
+              Delete
+            </button>
+          )}
         </div>
       )}
     </div>
