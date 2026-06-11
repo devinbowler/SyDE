@@ -9,6 +9,9 @@ interface NodeProps {
   workspaceRoot: string
   onOpen: (p: string) => void
   onContextMenu: (e: React.MouseEvent, node: FileTreeNode) => void
+  renamingPath: string | null
+  onCommitRename: (oldPath: string, newName: string) => Promise<void>
+  onCancelRename: () => void
 }
 
 interface ContextMenuState {
@@ -20,6 +23,17 @@ interface ContextMenuState {
 interface CreateState {
   parentDir: string
   type: 'file' | 'folder'
+}
+
+function joinPath(parent: string, name: string): string {
+  // Preserve whatever separator the parent already uses (Windows vs POSIX).
+  const sep = parent.includes('\\') && !parent.includes('/') ? '\\' : '/'
+  return parent.replace(/[\\/]+$/, '') + sep + name
+}
+
+function dirnameOf(p: string): string {
+  const idx = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
+  return idx === -1 ? '' : p.slice(0, idx)
 }
 
 function Chevron({ open }: { open: boolean }) {
@@ -114,65 +128,52 @@ function Checkbox({
   )
 }
 
-function TreeNode({
-  node,
-  depth,
-  workspaceRoot,
-  onOpen,
-  onContextMenu
-}: NodeProps) {
-  const [open, setOpen] = useState(depth < 1)
-  const activeFilePath = useStore((s) => s.activeFilePath)
-  const pinnedFiles = useStore((s) => s.pinnedFiles)
-  const togglePinned = useStore((s) => s.togglePinned)
-
-  const isActive = activeFilePath === node.path
-  const isPinned = pinnedFiles.has(node.path)
-
-  if (node.isDirectory) {
-    return (
-      <div>
-        <div
-          onClick={() => setOpen((o) => !o)}
-          onContextMenu={(e) => onContextMenu(e, node)}
-          className="group flex cursor-pointer items-center gap-1.5 rounded-sm px-1.5 py-0.5 hover:bg-bg-hover"
-          style={{ paddingLeft: depth * 12 + 6 }}
-        >
-          <Chevron open={open} />
-          <FolderIcon open={open} />
-          <span className="truncate text-xs text-fg-muted">{node.name}</span>
-        </div>
-        {open && (
-          <div>
-            {(node.children ?? []).map((c) => (
-              <TreeNode
-                key={c.path}
-                node={c}
-                depth={depth + 1}
-                workspaceRoot={workspaceRoot}
-                onOpen={onOpen}
-                onContextMenu={onContextMenu}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-    )
-  }
+function RenameInput({
+  initial,
+  onCommit,
+  onCancel
+}: {
+  initial: string
+  onCommit: (next: string) => void
+  onCancel: () => void
+}) {
+  const [val, setVal] = useState(initial)
+  const ref = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (ref.current) {
+      ref.current.focus()
+      // Select up to (but not including) the file extension.
+      const dot = initial.lastIndexOf('.')
+      const end = dot > 0 ? dot : initial.length
+      ref.current.setSelectionRange(0, end)
+    }
+  }, [initial])
 
   return (
-    <div
-      onClick={() => onOpen(node.path)}
-      onContextMenu={(e) => onContextMenu(e, node)}
-      className={`group flex cursor-pointer items-center gap-1.5 rounded-sm px-1.5 py-0.5 ${
-        isActive ? 'bg-bg-raised text-fg-base' : 'text-fg-muted hover:bg-bg-hover'
-      }`}
-      style={{ paddingLeft: depth * 12 + 6 }}
-    >
-      <Checkbox checked={isPinned} onChange={() => togglePinned(node.path)} />
-      <FileIcon />
-      <span className="truncate text-xs">{node.name}</span>
-    </div>
+    <input
+      ref={ref}
+      value={val}
+      onChange={(e) => setVal(e.target.value)}
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          const trimmed = val.trim()
+          if (!trimmed || trimmed === initial) onCancel()
+          else onCommit(trimmed)
+        } else if (e.key === 'Escape') {
+          e.preventDefault()
+          onCancel()
+        }
+      }}
+      onBlur={() => {
+        const trimmed = val.trim()
+        if (!trimmed || trimmed === initial) onCancel()
+        else onCommit(trimmed)
+      }}
+      className="syde-selectable min-w-0 flex-1 rounded-sm border border-accent/60 bg-bg-base px-1 py-0 text-xs text-fg-base focus:outline-none"
+      spellCheck={false}
+    />
   )
 }
 
@@ -216,6 +217,106 @@ function CreateInput({
   )
 }
 
+function TreeNode({
+  node,
+  depth,
+  workspaceRoot,
+  onOpen,
+  onContextMenu,
+  renamingPath,
+  onCommitRename,
+  onCancelRename
+}: NodeProps) {
+  const [open, setOpen] = useState(depth < 1)
+  const activeFilePath = useStore((s) => s.activeFilePath)
+  const pinnedFiles = useStore((s) => s.pinnedFiles)
+  const togglePinned = useStore((s) => s.togglePinned)
+
+  const isActive = activeFilePath === node.path
+  const isPinned = pinnedFiles.has(node.path)
+  const isRenaming = renamingPath === node.path
+  const isWorkspaceRoot = node.path === workspaceRoot
+
+  if (node.isDirectory) {
+    return (
+      <div>
+        <div
+          onClick={() => !isRenaming && setOpen((o) => !o)}
+          onContextMenu={(e) => onContextMenu(e, node)}
+          className="group flex cursor-pointer items-center gap-1.5 rounded-sm px-1.5 py-0.5 hover:bg-bg-hover"
+          style={{ paddingLeft: depth * 12 + 6 }}
+        >
+          <Chevron open={open} />
+          {/* Workspace-root folder isn't pinnable — pinning the root is what
+              `context: project` is for. */}
+          {!isWorkspaceRoot && (
+            <Checkbox
+              checked={isPinned}
+              onChange={() => togglePinned(node.path)}
+            />
+          )}
+          <FolderIcon open={open} />
+          {isRenaming && !isWorkspaceRoot ? (
+            <RenameInput
+              initial={node.name}
+              onCommit={(next) => void onCommitRename(node.path, next)}
+              onCancel={onCancelRename}
+            />
+          ) : (
+            <span
+              className={`truncate text-xs ${
+                isPinned ? 'text-fg-base' : 'text-fg-muted'
+              }`}
+            >
+              {node.name}
+            </span>
+          )}
+        </div>
+        {open && (
+          <div>
+            {(node.children ?? []).map((c) => (
+              <TreeNode
+                key={c.path}
+                node={c}
+                depth={depth + 1}
+                workspaceRoot={workspaceRoot}
+                onOpen={onOpen}
+                onContextMenu={onContextMenu}
+                renamingPath={renamingPath}
+                onCommitRename={onCommitRename}
+                onCancelRename={onCancelRename}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div
+      onClick={() => !isRenaming && onOpen(node.path)}
+      onContextMenu={(e) => onContextMenu(e, node)}
+      className={`group flex cursor-pointer items-center gap-1.5 rounded-sm px-1.5 py-0.5 ${
+        isActive ? 'bg-bg-raised text-fg-base' : 'text-fg-muted hover:bg-bg-hover'
+      }`}
+      style={{ paddingLeft: depth * 12 + 6 }}
+    >
+      <Checkbox checked={isPinned} onChange={() => togglePinned(node.path)} />
+      <FileIcon />
+      {isRenaming ? (
+        <RenameInput
+          initial={node.name}
+          onCommit={(next) => void onCommitRename(node.path, next)}
+          onCancel={onCancelRename}
+        />
+      ) : (
+        <span className="truncate text-xs">{node.name}</span>
+      )}
+    </div>
+  )
+}
+
 export function FileTree() {
   const {
     workspaceRoot,
@@ -230,9 +331,15 @@ export function FileTree() {
   const pinnedCount = useStore((s) => s.pinnedFiles.size)
   const clearPinned = useStore((s) => s.clearPinned)
   const toggleLeft = useStore((s) => s.toggleLeft)
+  const togglePinned = useStore((s) => s.togglePinned)
+  const renameActiveFile = useStore((s) => s.renameActiveFile)
+  const remapPinned = useStore((s) => s.remapPinned)
+  const setLastError = useStore((s) => s.setLastError)
+  const setLastEvent = useStore((s) => s.setLastEvent)
 
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
   const [creating, setCreating] = useState<CreateState | null>(null)
+  const [renamingPath, setRenamingPath] = useState<string | null>(null)
 
   const closeContextMenu = useCallback(() => setContextMenu(null), [])
 
@@ -296,7 +403,37 @@ export function FileTree() {
     [closeContextMenu, deleteItem]
   )
 
-  const isWorkspaceRoot = (node: FileTreeNode) =>
+  const startRename = useCallback(
+    (node: FileTreeNode) => {
+      closeContextMenu()
+      setRenamingPath(node.path)
+    },
+    [closeContextMenu]
+  )
+
+  const onCommitRename = useCallback(
+    async (oldPath: string, newName: string) => {
+      setRenamingPath(null)
+      if (!newName || /[\\/]/.test(newName)) {
+        setLastError('Name cannot contain / or \\')
+        return
+      }
+      const newPath = joinPath(dirnameOf(oldPath), newName)
+      try {
+        await window.syde.fs.rename(oldPath, newPath)
+        // The chokidar watcher refreshes the tree; we still need to remap
+        // the editor + pinned set so they don't dangle on the stale path.
+        renameActiveFile(oldPath, newPath)
+        remapPinned(oldPath, newPath)
+        setLastEvent(`renamed → ${newName}`)
+      } catch (e) {
+        setLastError(`Rename failed: ${(e as Error).message}`)
+      }
+    },
+    [renameActiveFile, remapPinned, setLastError, setLastEvent]
+  )
+
+  const isWorkspaceRootNode = (node: FileTreeNode) =>
     workspaceRoot !== null && node.path === workspaceRoot
 
   return (
@@ -309,7 +446,7 @@ export function FileTree() {
           {pinnedCount > 0 && (
             <span
               className="rounded-sm bg-accent/15 px-1.5 py-0.5 text-2xs font-medium text-accent"
-              title={`${pinnedCount} files pinned to LLM context`}
+              title={`${pinnedCount} file${pinnedCount === 1 ? '' : 's'}/folder${pinnedCount === 1 ? '' : 's'} pinned to LLM context`}
             >
               {pinnedCount} pinned
             </span>
@@ -398,6 +535,9 @@ export function FileTree() {
               workspaceRoot={workspaceRoot}
               onOpen={openFromPath}
               onContextMenu={handleContextMenu}
+              renamingPath={renamingPath}
+              onCommitRename={onCommitRename}
+              onCancelRename={() => setRenamingPath(null)}
             />
           </div>
         )}
@@ -416,33 +556,59 @@ export function FileTree() {
 
       {contextMenu && (
         <div
-          className="fixed z-50 min-w-[140px] rounded-md border border-border-subtle bg-bg-panel py-1 shadow-lg"
+          className="fixed z-50 min-w-[160px] overflow-hidden rounded-md border border-border-subtle bg-bg-panel py-1 shadow-lg"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
         >
           {contextMenu.node.isDirectory && (
             <>
               <button
-                className="block w-full px-3 py-1.5 text-left text-xs text-fg-muted hover:bg-bg-hover"
+                className="block w-full px-3 py-1.5 text-left text-xs text-fg-base hover:bg-bg-hover"
                 onClick={() => startCreate(contextMenu.node.path, 'file')}
               >
                 New file
               </button>
               <button
-                className="block w-full px-3 py-1.5 text-left text-xs text-fg-muted hover:bg-bg-hover"
+                className="block w-full px-3 py-1.5 text-left text-xs text-fg-base hover:bg-bg-hover"
                 onClick={() => startCreate(contextMenu.node.path, 'folder')}
               >
                 New folder
               </button>
+              <div className="my-1 border-t border-border-subtle" />
             </>
           )}
-          {!isWorkspaceRoot(contextMenu.node) && (
+          {!isWorkspaceRootNode(contextMenu.node) && (
             <button
-              className="block w-full px-3 py-1.5 text-left text-xs text-red-400 hover:bg-bg-hover"
-              onClick={() => void handleDelete(contextMenu.node)}
+              className="block w-full px-3 py-1.5 text-left text-xs text-fg-base hover:bg-bg-hover"
+              onClick={() => startRename(contextMenu.node)}
             >
-              Delete
+              Rename
             </button>
+          )}
+          {!isWorkspaceRootNode(contextMenu.node) && (
+            <button
+              className="block w-full px-3 py-1.5 text-left text-xs text-fg-base hover:bg-bg-hover"
+              onClick={() => {
+                togglePinned(contextMenu.node.path)
+                closeContextMenu()
+              }}
+            >
+              {useStore.getState().pinnedFiles.has(contextMenu.node.path)
+                ? 'Unpin from context'
+                : 'Pin to context'}
+            </button>
+          )}
+          {!isWorkspaceRootNode(contextMenu.node) && (
+            <>
+              <div className="my-1 border-t border-border-subtle" />
+              <button
+                className="block w-full px-3 py-1.5 text-left text-xs text-rose-400 hover:bg-bg-hover"
+                onClick={() => void handleDelete(contextMenu.node)}
+              >
+                Delete
+              </button>
+            </>
           )}
         </div>
       )}

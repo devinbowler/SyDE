@@ -125,7 +125,13 @@ function buildSystemPrompt(mode: Mode, scope: Scope, contextCount: number): stri
       break
     case 'edit':
       lines.push(
-        'MODE: EDIT. Your entire response will be inserted directly into the editor at the scoped range. Output ONLY the replacement code. No explanations. No prose. No code fences. No leading or trailing commentary. If you cannot satisfy the request within the scope, output the original code unchanged.'
+        [
+          'MODE: EDIT. Your entire response is inserted verbatim into the editor at the scoped range.',
+          'Output ONLY the replacement code. No explanations. No prose. No leading or trailing commentary.',
+          'Do NOT describe what you changed. Do NOT say "Edited", "Rewrote", "Updated", "I changed", "Here is", etc.',
+          'Do NOT wrap the code in markdown fences (no ```). Just emit the raw code.',
+          'If you literally cannot satisfy the request inside the scope, output the original scope contents unchanged — never produce a summary.'
+        ].join(' ')
       )
       break
   }

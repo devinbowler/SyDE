@@ -6,6 +6,7 @@ import { ScopeBar } from './components/ScopeBar'
 import { ChatPanel } from './components/ChatPanel'
 import { Terminal } from './components/Terminal'
 import { SettingsModal } from './components/SettingsModal'
+import { FindReplaceModal } from './components/FindReplaceModal'
 import type { SydeSettings } from './types'
 
 const MIN_LEFT = 180
@@ -142,12 +143,28 @@ function MoonIcon() {
   )
 }
 
+function SearchIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
+      <circle cx="6" cy="6" r="4" stroke="currentColor" strokeWidth="1.4" />
+      <path
+        d="M9 9 L12 12"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
 function TitleBar({
   settings,
-  onOpenSettings
+  onOpenSettings,
+  onOpenFind
 }: {
   settings: SydeSettings | null
   onOpenSettings: () => void
+  onOpenFind: () => void
 }) {
   const activeFilePath = useStore((s) => s.activeFilePath)
   const activeDirty = useStore((s) => s.activeDirty)
@@ -204,6 +221,14 @@ function TitleBar({
             +
           </button>
         </div>
+
+        <button
+          onClick={onOpenFind}
+          className="flex h-6 w-6 items-center justify-center rounded-md bg-bg-subtle text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg-base"
+          title="Find in project (Ctrl+Shift+F)"
+        >
+          <SearchIcon />
+        </button>
 
         <button
           onClick={onOpenSettings}
@@ -293,6 +318,21 @@ export function App() {
   const [bottomHeight, setBottomHeight] = useState(220)
   const [settings, setSettings] = useState<SydeSettings | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [findOpen, setFindOpen] = useState(false)
+
+  // Ctrl+Shift+F (Cmd+Shift+F on macOS) opens "Find in project". Bound at the
+  // top level so it works regardless of which panel has focus.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const meta = e.ctrlKey || e.metaKey
+      if (meta && e.shiftKey && (e.key === 'F' || e.key === 'f')) {
+        e.preventDefault()
+        setFindOpen(true)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
@@ -335,11 +375,16 @@ export function App() {
 
   return (
     <div className="flex h-full w-full flex-col bg-bg-base text-fg-base">
-      <TitleBar settings={settings} onOpenSettings={() => setSettingsOpen(true)} />
+      <TitleBar
+        settings={settings}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenFind={() => setFindOpen(true)}
+      />
       {settings && !settings.providers[settings.activeProvider].hasApiKey && (
         <NoKeyBanner onOpen={() => setSettingsOpen(true)} />
       )}
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <FindReplaceModal open={findOpen} onClose={() => setFindOpen(false)} />
       <div className="flex min-h-0 flex-1">
         {panels.leftOpen ? (
           <>

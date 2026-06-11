@@ -16,6 +16,11 @@ export type {
   SessionSummary,
   SettingsUpdate,
   ProviderSettings,
+  SearchHit,
+  SearchOptions,
+  SearchResult,
+  ReplaceOptions,
+  ReplaceResult,
   SydeSettings,
   KeyTestResult,
   TokenUsage

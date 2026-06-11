@@ -9,7 +9,11 @@ import type {
   LLMRequest,
   LLMStreamEvent,
   Mode,
+  ReplaceOptions,
+  ReplaceResult,
   ScopeLevel,
+  SearchOptions,
+  SearchResult,
   SessionSummary,
   SettingsUpdate,
   StoredMessage,
@@ -36,6 +40,12 @@ const api = {
       ipcRenderer.invoke(IPC.fsCreateDir, args),
     delete: (args: { rootPath: string; targetPath: string }): Promise<boolean> =>
       ipcRenderer.invoke(IPC.fsDelete, args),
+    rename: (oldPath: string, newPath: string): Promise<boolean> =>
+      ipcRenderer.invoke(IPC.fsRename, oldPath, newPath),
+    projectSearch: (opts: SearchOptions): Promise<SearchResult> =>
+      ipcRenderer.invoke(IPC.fsProjectSearch, opts),
+    projectReplace: (opts: ReplaceOptions): Promise<ReplaceResult> =>
+      ipcRenderer.invoke(IPC.fsProjectReplace, opts),
     openDirDialog: (): Promise<string | null> =>
       ipcRenderer.invoke(IPC.fsOpenDirDialog),
     openFileDialog: (): Promise<string | null> =>

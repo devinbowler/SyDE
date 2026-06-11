@@ -55,12 +55,16 @@ interface SydeState {
   setPinned: (paths: string[]) => void
   clearPinned: () => void
   unpinMatching: (prefix: string) => void
+  /** Update pinned-set entries that match `oldPath` (or live under it for folders). */
+  remapPinned: (oldPath: string, newPath: string) => void
 
   openFile: (path: string, content: string, language: string) => void
   closeActiveFile: () => void
   onPathDeleted: (deletedPath: string) => void
   setActiveContent: (content: string, dirty?: boolean) => void
   markSaved: () => void
+  /** If the active file's path moved (e.g. rename), keep editor state attached. */
+  renameActiveFile: (oldPath: string, newPath: string) => void
 
   setScopeLevel: (s: ScopeLevel) => void
   setScopeRange: (r: ScopeRange | null) => void
@@ -168,6 +172,20 @@ export const useStore = create<SydeState>((set) => ({
       )
       return { pinnedFiles: next }
     }),
+  remapPinned: (oldPath, newPath) =>
+    set((s) => {
+      const next = new Set<string>()
+      const isPosix = !oldPath.includes('\\')
+      const sep = isPosix ? '/' : oldPath.includes('\\') ? '\\' : '/'
+      const oldPrefix = oldPath.endsWith(sep) ? oldPath : oldPath + sep
+      const newPrefix = newPath.endsWith(sep) ? newPath : newPath + sep
+      for (const p of s.pinnedFiles) {
+        if (p === oldPath) next.add(newPath)
+        else if (p.startsWith(oldPrefix)) next.add(newPrefix + p.slice(oldPrefix.length))
+        else next.add(p)
+      }
+      return { pinnedFiles: next }
+    }),
 
   openFile: (p, content, language) =>
     set({
@@ -213,6 +231,11 @@ export const useStore = create<SydeState>((set) => ({
   setActiveContent: (content, dirty = true) =>
     set({ activeContent: content, activeDirty: dirty }),
   markSaved: () => set({ activeDirty: false }),
+  renameActiveFile: (oldPath, newPath) =>
+    set((s) => {
+      if (s.activeFilePath !== oldPath) return s
+      return { activeFilePath: newPath }
+    }),
 
   setScopeLevel: (s) => set({ scopeLevel: s }),
   setScopeRange: (r) => set({ scopeRange: r }),

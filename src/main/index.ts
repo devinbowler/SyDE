@@ -2,21 +2,27 @@ import {
   app,
   BrowserWindow,
   dialog,
+  globalShortcut,
   ipcMain,
   Menu,
+  nativeImage,
   nativeTheme,
   safeStorage,
-  shell
+  shell,
+  Tray
 } from 'electron'
 import path from 'path'
 import os from 'os'
 import fs from 'fs'
+import zlib from 'zlib'
 import { IPC } from '@shared/types'
 import type {
   CollectContextArgs,
   CollectedContext,
   LLMProvider,
   LLMRequest,
+  ReplaceOptions,
+  SearchOptions,
   SettingsUpdate,
   SydeSettings,
   TerminalSpawnOptions
@@ -29,10 +35,13 @@ import {
   createDirectorySafe,
   deletePathSafe,
   assertWithinRoot,
+  renameSafe,
   startWatching,
   stopWatching,
   stopAllWatchers,
-  collectProjectContext
+  collectProjectContext,
+  projectSearch,
+  projectReplace
 } from './fileSystem'
 import {
   initDatabase,
@@ -67,6 +76,10 @@ type IPty = {
 }
 
 let mainWindow: BrowserWindow | null = null
+let tray: Tray | null = null
+// Distinguish "user closed the window" (we hide instead) from "user actually
+// wants to quit the app" (Cmd/Ctrl+Q, tray menu Quit, app.quit, OS shutdown).
+let forceQuit = false
 let isShuttingDown = false
 const llm = new LLMSession()
 const ptys = new Map<string, IPty>()
@@ -90,6 +103,118 @@ function safeSend(channel: string, payload: unknown): void {
   }
 }
 
+// CRC32 lookup for PNG chunk checksums. Standalone so we don't pull in a dep
+// just to draw a 16×16 tray icon.
+const CRC32_TABLE = (() => {
+  const t = new Uint32Array(256)
+  for (let n = 0; n < 256; n++) {
+    let c = n
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+    t[n] = c >>> 0
+  }
+  return t
+})()
+
+function crc32(buf: Buffer): number {
+  let c = 0xffffffff
+  for (let i = 0; i < buf.length; i++) c = CRC32_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8)
+  return (c ^ 0xffffffff) >>> 0
+}
+
+function makePngChunk(type: string, data: Buffer): Buffer {
+  const length = Buffer.alloc(4)
+  length.writeUInt32BE(data.length, 0)
+  const typeBuf = Buffer.from(type, 'ascii')
+  const crc = Buffer.alloc(4)
+  crc.writeUInt32BE(crc32(Buffer.concat([typeBuf, data])), 0)
+  return Buffer.concat([length, typeBuf, data, crc])
+}
+
+/**
+ * Build a 16×16 RGBA PNG entirely in memory. Avoids shipping a binary asset
+ * — handy because the build's `files: ["out/**"]` rule strips `build/*.png`
+ * unless we explicitly include it.
+ */
+function buildTrayIconBuffer(): Buffer {
+  const w = 16
+  const h = 16
+  // Filled rounded square with a brand-color "S" silhouette (very rough at
+  // this resolution — it just needs to be recognizable in the tray).
+  const stride = 1 + w * 4
+  const raw = Buffer.alloc(stride * h)
+  const center = (w - 1) / 2
+  const radius = 7.2
+
+  const insideColor = [0x9d, 0x7c, 0xff, 0xff] // accent purple
+  const transparent = [0, 0, 0, 0]
+
+  for (let y = 0; y < h; y++) {
+    raw[y * stride] = 0 // PNG filter: None
+    for (let x = 0; x < w; x++) {
+      const off = y * stride + 1 + x * 4
+      const dx = x - center
+      const dy = y - center
+      const dist = Math.sqrt(dx * dx + dy * dy)
+      const c = dist <= radius ? insideColor : transparent
+      raw[off] = c[0]
+      raw[off + 1] = c[1]
+      raw[off + 2] = c[2]
+      raw[off + 3] = c[3]
+    }
+  }
+
+  const sig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(w, 0)
+  ihdr.writeUInt32BE(h, 4)
+  ihdr.writeUInt8(8, 8) // bit depth
+  ihdr.writeUInt8(6, 9) // RGBA
+  ihdr.writeUInt8(0, 10) // compression
+  ihdr.writeUInt8(0, 11) // filter
+  ihdr.writeUInt8(0, 12) // interlace
+
+  const idatBody = zlib.deflateSync(raw)
+  return Buffer.concat([
+    sig,
+    makePngChunk('IHDR', ihdr),
+    makePngChunk('IDAT', idatBody),
+    makePngChunk('IEND', Buffer.alloc(0))
+  ])
+}
+
+function ensureTray(): void {
+  if (tray) return
+  const img = nativeImage.createFromBuffer(buildTrayIconBuffer())
+  tray = new Tray(img)
+  tray.setToolTip('SyDE')
+  const showWindow = () => {
+    if (!mainWindow) return
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  }
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: 'Show SyDE', click: showWindow },
+      { type: 'separator' },
+      {
+        label: 'Quit SyDE',
+        click: () => {
+          forceQuit = true
+          app.quit()
+        }
+      }
+    ])
+  )
+  tray.on('click', () => {
+    if (mainWindow?.isVisible() && !mainWindow.isMinimized()) {
+      mainWindow.hide()
+    } else {
+      showWindow()
+    }
+  })
+}
+
 function teardownPtys(): void {
   for (const p of ptys.values()) {
     try {
@@ -101,10 +226,63 @@ function teardownPtys(): void {
   ptys.clear()
 }
 
+function buildAppMenu(): void {
+  // We hide the menu bar visually (autoHideMenuBar + setMenuBarVisibility),
+  // but installing a Menu wires up Cmd/Ctrl+Q so the user always has a
+  // first-class quit path that bypasses the hide-on-close interception.
+  const isMac = process.platform === 'darwin'
+  const template: Electron.MenuItemConstructorOptions[] = [
+    ...(isMac
+      ? [
+          {
+            label: app.name,
+            submenu: [
+              { role: 'about' as const },
+              { type: 'separator' as const },
+              { role: 'hide' as const },
+              { role: 'hideOthers' as const },
+              { role: 'unhide' as const },
+              { type: 'separator' as const },
+              {
+                label: 'Quit SyDE',
+                accelerator: 'Cmd+Q',
+                click: () => {
+                  forceQuit = true
+                  app.quit()
+                }
+              }
+            ]
+          }
+        ]
+      : []),
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'Hide Window',
+          accelerator: isMac ? 'Cmd+W' : 'Ctrl+W',
+          click: () => mainWindow?.hide()
+        },
+        { type: 'separator' },
+        {
+          label: 'Quit SyDE',
+          accelerator: isMac ? 'Cmd+Q' : 'Ctrl+Q',
+          click: () => {
+            forceQuit = true
+            app.quit()
+          }
+        }
+      ]
+    },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    { role: 'windowMenu' }
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+
 function createWindow(): void {
-  // Strip Electron's default app menu — SyDE provides its own chrome and the
-  // native menu doesn't theme cleanly across platforms.
-  Menu.setApplicationMenu(null)
+  buildAppMenu()
 
   mainWindow = new BrowserWindow({
     width: 1600,
@@ -127,13 +305,21 @@ function createWindow(): void {
 
   mainWindow.on('ready-to-show', () => mainWindow?.show())
 
-  // When the window starts closing, kill native sources BEFORE webContents is
-  // destroyed — otherwise their final data events crash with
-  // "Object has been destroyed".
-  mainWindow.on('close', () => {
-    isShuttingDown = true
-    teardownPtys()
-    stopAllWatchers()
+  // Hide-on-close: if the user clicks the window's X (or Cmd/Ctrl+W via the
+  // menu), don't terminate the app. Stash it in the system tray instead so
+  // the file tree, terminal sessions, and chat history all stay alive. The
+  // user can quit explicitly via Cmd/Ctrl+Q or the tray menu, which sets
+  // `forceQuit` and lets the close go through normally.
+  mainWindow.on('close', (e) => {
+    if (forceQuit) {
+      isShuttingDown = true
+      teardownPtys()
+      stopAllWatchers()
+      return
+    }
+    e.preventDefault()
+    mainWindow?.hide()
+    ensureTray()
   })
 
   mainWindow.on('closed', () => {
@@ -194,6 +380,19 @@ function registerFileSystemIPC(): void {
       return true
     }
   )
+
+  ipcMain.handle(IPC.fsRename, async (_e, oldPath: string, newPath: string) => {
+    await renameSafe(oldPath, newPath)
+    return true
+  })
+
+  ipcMain.handle(IPC.fsProjectSearch, async (_e, opts: SearchOptions) => {
+    return projectSearch(opts)
+  })
+
+  ipcMain.handle(IPC.fsProjectReplace, async (_e, opts: ReplaceOptions) => {
+    return projectReplace(opts)
+  })
 
   ipcMain.handle(IPC.fsOpenDirDialog, async () => {
     if (!mainWindow) return null
@@ -438,7 +637,32 @@ function registerContextIPC(): void {
       if (mode === 'pinned') {
         for (const p of pinned) {
           if (out.files.length >= maxFiles) break
-          await tryAdd(p, 'pinned')
+          // Pinned entries can be either files or directories. Files are
+          // added directly; directories are walked using the same
+          // exclusions/limits as the project collector.
+          let stat: import('fs').Stats | null = null
+          try {
+            stat = fs.statSync(p)
+          } catch {
+            out.skipped.push({ path: p, reason: 'pinned path missing' })
+            continue
+          }
+          if (stat.isDirectory()) {
+            const collected = await collectProjectContext(p, {
+              maxFiles: maxFiles - out.files.length,
+              maxLinesPerFile
+            })
+            for (const f of collected.files) {
+              if (out.files.length >= maxFiles) break
+              if (seen.has(f.path)) continue
+              seen.add(f.path)
+              out.files.push(f)
+              out.totalChars += f.content.length
+            }
+            out.skipped.push(...collected.skipped)
+          } else {
+            await tryAdd(p, 'pinned')
+          }
         }
         return out
       }
@@ -527,6 +751,22 @@ function registerSettingsIPC(): void {
   )
 }
 
+// Single-instance lock: if the user launches the .exe again while SyDE is
+// already running (especially handy when the window is hidden in the tray),
+// the second launch refocuses the existing window instead of spawning a new
+// process.
+const gotLock = app.requestSingleInstanceLock()
+if (!gotLock) {
+  app.quit()
+}
+
+app.on('second-instance', () => {
+  if (!mainWindow) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+})
+
 app.whenReady().then(() => {
   initDatabase()
 
@@ -558,15 +798,24 @@ app.whenReady().then(() => {
 })
 
 app.on('before-quit', () => {
+  forceQuit = true
   isShuttingDown = true
+  try {
+    globalShortcut.unregisterAll()
+  } catch {
+    // ignore
+  }
   teardownPtys()
   stopAllWatchers()
 })
 
+// We intentionally DO NOT auto-quit on window-all-closed. The whole point of
+// the tray-hide pattern is that closing the last window keeps SyDE alive.
+// Real quits go through `before-quit` → `forceQuit = true`.
 app.on('window-all-closed', () => {
-  isShuttingDown = true
-  teardownPtys()
-  stopAllWatchers()
-  closeDatabase()
-  if (process.platform !== 'darwin') app.quit()
+  if (process.platform === 'darwin') return
+  if (forceQuit) {
+    closeDatabase()
+    app.quit()
+  }
 })

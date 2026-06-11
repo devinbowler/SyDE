@@ -22,13 +22,68 @@ function makeId(): string {
   return Math.random().toString(36).slice(2) + Date.now().toString(36)
 }
 
-function stripCodeFence(s: string): string {
-  // If the model wrapped its output in a single fenced code block, peel it.
+/**
+ * Pull the actual code payload out of an edit-mode LLM response.
+ *
+ * Returns either `{ code }` with the code to apply, or `{ rejected }` with a
+ * reason — in which case the caller MUST NOT touch the editor. This is the
+ * defense against the "model returns 'Edited file foo on lines 1–10' prose
+ * and we paste that into the file" failure mode.
+ */
+function extractEditPayload(
+  s: string,
+  prevContent: string
+): { code: string; rejected?: string } {
   const trimmed = s.trim()
-  const fence = /^```(?:[a-zA-Z0-9_+-]*)\n([\s\S]*?)\n```$/m
-  const m = fence.exec(trimmed)
-  if (m && m[1] !== undefined) return m[1]
-  return s
+  if (!trimmed) return { code: '', rejected: 'empty response' }
+
+  // Prefer fenced code blocks anywhere in the response. If one or more
+  // exists, concatenate them — that lets the model wrap explanations
+  // outside the fence without us applying the explanation as code.
+  const fenceRe = /```(?:[a-zA-Z0-9_+-]*)\r?\n([\s\S]*?)\r?\n```/g
+  const fenceMatches: string[] = []
+  let m: RegExpExecArray | null
+  while ((m = fenceRe.exec(trimmed)) !== null) {
+    if (m[1] !== undefined) fenceMatches.push(m[1])
+  }
+  if (fenceMatches.length > 0) return { code: fenceMatches.join('\n') }
+
+  // No fence — guard against prose. These are the patterns models love to
+  // produce when they decide to "narrate" a change instead of emitting code.
+  const proseStart =
+    /^(I\b|I'(ve|ll|m)|Sure\b|Certainly\b|Of course\b|Here\b|Here's\b|Now,|Okay,?|Alright,?|Done\.|Edited\b|Rewrote\b|Updated\b|Replaced\b|Changed\b|Modified\b|Added\b|Removed\b|This\b)/i
+  // Specifically the SyDE summary-line shape we display in the chat.
+  const summaryShape =
+    /^(edit(ed|ing)?|rewrote|updated|replaced|changed|modified)\s+\S+\s+(on|at|in|for|to|line|lines|·)/i
+  // Sentence-y first line followed by no obvious code structure.
+  const looksLikeSentence =
+    /^[A-Z][^\n]{6,}[.!?:](\s|$)/.test(trimmed) &&
+    !/[{};()=<>]|^\s{2,}\S/m.test(trimmed)
+
+  if (proseStart.test(trimmed) || summaryShape.test(trimmed) || looksLikeSentence) {
+    return {
+      code: '',
+      rejected:
+        'model returned prose instead of code. The edit was not applied — re-run, narrow your scope, or switch to ask mode.'
+    }
+  }
+
+  // Last-resort heuristic: if the response is dramatically shorter than the
+  // scope it was supposed to replace AND lacks any code-looking characters,
+  // assume it's a summary.
+  if (prevContent.length > 200) {
+    const ratio = trimmed.length / prevContent.length
+    const hasCodeChars = /[{}();=<>]|^\s{2,}\S/m.test(trimmed)
+    if (ratio < 0.25 && !hasCodeChars) {
+      return {
+        code: '',
+        rejected:
+          'response looked like a summary, not code. The edit was not applied.'
+      }
+    }
+  }
+
+  return { code: s }
 }
 
 function countLines(s: string): number {
@@ -166,7 +221,37 @@ export function useLLM() {
         const finalText = event.fullText || entry.accum
 
         if (entry.mode === 'edit') {
-          const cleaned = stripCodeFence(finalText)
+          const extracted = extractEditPayload(finalText, entry.prevContent)
+
+          if (extracted.rejected) {
+            // The model produced prose (or pseudo-prose) instead of code.
+            // We refuse to apply it — the editor stays untouched.
+            const errMsg = extracted.rejected
+            patchChat(entry.chatItemId, {
+              content: `Edit not applied: ${errMsg}`,
+              streaming: false,
+              streamProgress: undefined,
+              error: errMsg,
+              usage: event.usage
+            })
+            const sid = useStore.getState().sessionId
+            if (sid) {
+              void window.syde.db.appendMessage({
+                sessionId: sid,
+                role: 'assistant',
+                content: `Edit not applied: ${errMsg}`,
+                scopeLevel: entry.scopeLevel,
+                mode: entry.mode
+              })
+            }
+            setLastError(errMsg)
+            setLastEvent('edit rejected · output was not code')
+            inflight.current.delete(event.requestId)
+            setStreamingId(null)
+            return
+          }
+
+          const cleaned = extracted.code
 
           // Apply to editor in edit mode.
           if (entry.scopeLevel === 'file' || entry.scopeLevel === 'project') {

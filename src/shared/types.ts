@@ -96,11 +96,14 @@ export const IPC = {
   fsCreateFile: 'fs:createFile',
   fsCreateDir: 'fs:createDir',
   fsDelete: 'fs:delete',
+  fsRename: 'fs:rename',
   fsOpenDirDialog: 'fs:openDirDialog',
   fsOpenFileDialog: 'fs:openFileDialog',
   fsWatchStart: 'fs:watchStart',
   fsWatchStop: 'fs:watchStop',
   fsWatchEvent: 'fs:watchEvent',
+  fsProjectSearch: 'fs:projectSearch',
+  fsProjectReplace: 'fs:projectReplace',
 
   // LLM
   llmStart: 'llm:start',
@@ -181,4 +184,40 @@ export interface CollectedContext {
   files: ContextFile[]
   skipped: { path: string; reason: string }[]
   totalChars: number
+}
+
+// ── Global find/replace ──────────────────────────────────────────────────
+
+export interface SearchOptions {
+  pattern: string
+  isRegex: boolean
+  caseSensitive: boolean
+  wholeWord: boolean
+  rootPath: string
+  maxResults?: number
+  maxFilesScanned?: number
+}
+
+export interface SearchHit {
+  filePath: string
+  line: number
+  column: number
+  preview: string
+  matchLength: number
+}
+
+export interface SearchResult {
+  hits: SearchHit[]
+  filesScanned: number
+  truncated: boolean
+}
+
+export interface ReplaceOptions extends SearchOptions {
+  replacement: string
+}
+
+export interface ReplaceResult {
+  filesChanged: number
+  replacements: number
+  errors: { filePath: string; reason: string }[]
 }

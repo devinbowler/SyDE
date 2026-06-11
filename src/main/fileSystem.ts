@@ -1,7 +1,15 @@
 import { promises as fs } from 'fs'
 import path from 'path'
 import chokidar, { FSWatcher } from 'chokidar'
-import type { ContextFile, FileTreeNode } from '@shared/types'
+import type {
+  ContextFile,
+  FileTreeNode,
+  ReplaceOptions,
+  ReplaceResult,
+  SearchHit,
+  SearchOptions,
+  SearchResult
+} from '@shared/types'
 
 const IGNORE_DIRS = new Set([
   'node_modules',
@@ -159,6 +167,24 @@ export async function deletePathSafe(targetPath: string): Promise<void> {
   } else {
     await fs.unlink(targetPath)
   }
+}
+
+/**
+ * Rename a file or directory. Refuses to overwrite an existing target so we
+ * never silently clobber the user's data.
+ */
+export async function renameSafe(oldPath: string, newPath: string): Promise<void> {
+  if (!oldPath || !newPath) throw new Error('rename: empty path')
+  if (oldPath === newPath) return
+  try {
+    await fs.access(newPath)
+    throw new Error(`Target already exists: ${path.basename(newPath)}`)
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException
+    if (err.code !== 'ENOENT') throw e
+  }
+  await fs.mkdir(path.dirname(newPath), { recursive: true })
+  await fs.rename(oldPath, newPath)
 }
 
 const watchers = new Map<string, FSWatcher>()
@@ -319,4 +345,153 @@ export async function collectProjectContext(
 
   await walk(rootPath, 0)
   return { files, skipped }
+}
+
+// ── Global find / replace ─────────────────────────────────────────────────
+
+const SEARCH_MAX_FILE_BYTES = 1.5 * 1024 * 1024 // 1.5 MB hard cap per file
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function buildSearchRegex(opts: {
+  pattern: string
+  isRegex: boolean
+  caseSensitive: boolean
+  wholeWord: boolean
+}): RegExp {
+  let body = opts.isRegex ? opts.pattern : escapeRegExp(opts.pattern)
+  if (opts.wholeWord) body = `\\b(?:${body})\\b`
+  const flags = opts.caseSensitive ? 'g' : 'gi'
+  return new RegExp(body, flags)
+}
+
+/**
+ * Walk every code-shaped file under `rootPath` and collect regex hits. Honors
+ * the same exclusion rules as project-context collection (no node_modules,
+ * no lockfiles, no binaries, size cap per file).
+ */
+export async function projectSearch(opts: SearchOptions): Promise<SearchResult> {
+  const maxResults = opts.maxResults ?? 2000
+  const maxFiles = opts.maxFilesScanned ?? 5000
+  const re = buildSearchRegex(opts)
+  const hits: SearchHit[] = []
+  let filesScanned = 0
+  let truncated = false
+
+  async function walk(dir: string, depth: number): Promise<void> {
+    if (truncated) return
+    if (depth > 10) return
+
+    let entries: import('fs').Dirent[]
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+
+    for (const entry of entries) {
+      if (truncated) return
+      const full = path.join(dir, entry.name)
+
+      if (entry.isDirectory()) {
+        if (IGNORE_DIRS.has(entry.name)) continue
+        if (entry.name.startsWith('.')) continue
+        await walk(full, depth + 1)
+        continue
+      }
+
+      if (CONTEXT_EXCLUDED_FILES.has(entry.name)) continue
+      const dotIdx = entry.name.lastIndexOf('.')
+      const ext = dotIdx === -1 ? '' : entry.name.slice(dotIdx + 1).toLowerCase()
+      if (!CONTEXT_ALLOWED_EXT.has(ext)) continue
+
+      filesScanned++
+      if (filesScanned > maxFiles) {
+        truncated = true
+        return
+      }
+
+      try {
+        const stat = await fs.stat(full)
+        if (stat.size > SEARCH_MAX_FILE_BYTES) continue
+        const buf = await fs.readFile(full)
+        // crude binary check — first 4 KB must be NUL-free
+        const probe = buf.subarray(0, Math.min(buf.length, 4096))
+        let binary = false
+        for (let i = 0; i < probe.length; i++) {
+          if (probe[i] === 0) {
+            binary = true
+            break
+          }
+        }
+        if (binary) continue
+
+        const text = buf.toString('utf8')
+        const lines = text.split(/\r\n|\r|\n/)
+        for (let li = 0; li < lines.length; li++) {
+          const line = lines[li]
+          re.lastIndex = 0
+          let m: RegExpExecArray | null
+          while ((m = re.exec(line)) !== null) {
+            if (hits.length >= maxResults) {
+              truncated = true
+              return
+            }
+            hits.push({
+              filePath: full,
+              line: li + 1,
+              column: m.index + 1,
+              preview: line.length > 240 ? line.slice(0, 240) + '…' : line,
+              matchLength: m[0].length
+            })
+            // Empty-match guard for zero-width regexes.
+            if (m.index === re.lastIndex) re.lastIndex++
+          }
+        }
+      } catch {
+        // Skip unreadable files silently — they shouldn't show up in results.
+      }
+    }
+  }
+
+  await walk(opts.rootPath, 0)
+  return { hits, filesScanned, truncated }
+}
+
+/**
+ * Apply the replacement to every matched file. Operates per-file: read the
+ * full text, run String.replace with a global regex, write back if changed.
+ * No partial-match selection in v1 — it's "replace all".
+ */
+export async function projectReplace(opts: ReplaceOptions): Promise<ReplaceResult> {
+  // First pass: find which files contain any match. Reuses the search walker.
+  const search = await projectSearch(opts)
+  const filesWithHits = new Map<string, number>()
+  for (const h of search.hits) {
+    filesWithHits.set(h.filePath, (filesWithHits.get(h.filePath) ?? 0) + 1)
+  }
+
+  const errors: { filePath: string; reason: string }[] = []
+  let filesChanged = 0
+  let replacements = 0
+
+  for (const [filePath, hitCount] of filesWithHits.entries()) {
+    try {
+      const buf = await fs.readFile(filePath)
+      const text = buf.toString('utf8')
+      const re = buildSearchRegex(opts)
+      const next = text.replace(re, opts.replacement)
+      if (next !== text) {
+        await fs.writeFile(filePath, next, 'utf8')
+        filesChanged++
+        replacements += hitCount
+      }
+    } catch (e) {
+      errors.push({ filePath, reason: (e as Error).message })
+    }
+  }
+
+  return { filesChanged, replacements, errors }
 }

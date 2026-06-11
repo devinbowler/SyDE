@@ -1,5 +1,5 @@
 import Monaco, { OnMount, loader } from '@monaco-editor/react'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import * as monacoEditor from 'monaco-editor'
 import { useStore } from '../store'
 import {
@@ -9,6 +9,9 @@ import {
   useSaveShortcut
 } from '../hooks/useEditor'
 import type { editor as MonacoEditor } from 'monaco-editor'
+
+// Debounce window for autosave keystrokes.
+const AUTOSAVE_DELAY_MS = 600
 
 // Bundle monaco directly so the IDE works fully offline and in production.
 // This must run before the first <Monaco /> render.
@@ -99,11 +102,46 @@ export function Editor() {
 
   useScopeDecoration()
 
-  useSaveShortcut(() => {
+  // Single source of truth for "save the active buffer if dirty". Used by the
+  // explicit Ctrl+S shortcut, the debounced autosave on every keystroke, and
+  // the flush-on-blur handler so leaving the window never loses pending work.
+  const flushSave = () => {
     const { activeFilePath: p, activeContent: c, activeDirty } = useStore.getState()
     if (!p || !activeDirty) return
     void window.syde.fs.writeFile(p, c).then(() => markSaved())
-  })
+  }
+
+  useSaveShortcut(flushSave)
+
+  // Debounced autosave: writes ~600 ms after the last keystroke.
+  const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (autosaveTimer.current) clearTimeout(autosaveTimer.current)
+    autosaveTimer.current = setTimeout(() => {
+      flushSave()
+    }, AUTOSAVE_DELAY_MS)
+    return () => {
+      if (autosaveTimer.current) clearTimeout(autosaveTimer.current)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeContent, activeFilePath])
+
+  // Flush-on-blur: if the user clicks off the window with unsaved changes,
+  // write them through immediately. Same on visibility change so docking,
+  // minimizing, or alt-tabbing never strands a dirty buffer.
+  useEffect(() => {
+    const onBlur = () => flushSave()
+    const onVis = () => {
+      if (document.visibilityState === 'hidden') flushSave()
+    }
+    window.addEventListener('blur', onBlur)
+    document.addEventListener('visibilitychange', onVis)
+    return () => {
+      window.removeEventListener('blur', onBlur)
+      document.removeEventListener('visibilitychange', onVis)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Live theme switch.
   useEffect(() => {
